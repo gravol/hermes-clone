@@ -233,7 +233,7 @@ fun HermexNavGraph(chatVmsHolder: ChatVmsHolder) {
                     sessionsVm.createSession { sid ->
                         if (sid != null) {
                             val enc = URLEncoder.encode("New session", "UTF-8")
-                            navController.navigate("chat/$sid/$enc") { launchSingleTop = true }
+                            navController.navigate("chat/$sid/$enc/default") { launchSingleTop = true }
                         } else {
                             // Creation failed — drop the request, don't let a
                             // later manual chat-open arm the mic out of turn.
@@ -245,7 +245,7 @@ fun HermexNavGraph(chatVmsHolder: ChatVmsHolder) {
             HomeScreen(
                 onSessionTap = { session ->
                     val encodedTitle = URLEncoder.encode(session.title ?: session.id, "UTF-8")
-                    navController.navigate("chat/${session.id}/$encodedTitle")
+                    navController.navigate("chat/${session.id}/$encodedTitle/${URLEncoder.encode(session.source ?: "default", "UTF-8")}")
                 },
                 onSettings = {
                     navController.navigate("settings")
@@ -310,15 +310,17 @@ fun HermexNavGraph(chatVmsHolder: ChatVmsHolder) {
             )
         }
         composable(
-            route = "chat/{sessionId}/{title}",
+            route = "chat/{sessionId}/{title}/{bot}",
             arguments = listOf(
                 navArgument("sessionId") { type = NavType.StringType },
                 navArgument("title") { type = NavType.StringType },
+                navArgument("bot") { type = NavType.StringType; defaultValue = "default" },
             ),
         ) { backStackEntry ->
             val sessionId = backStackEntry.arguments?.getString("sessionId") ?: ""
             val encodedTitle = backStackEntry.arguments?.getString("title") ?: ""
             val title = URLDecoder.decode(encodedTitle, "UTF-8")
+            val bot = backStackEntry.arguments?.getString("bot").orEmpty().ifBlank { "default" }
             // Chat ViewModels are held at Activity scope (ChatVmsHolder) so the
             // WebSocket survives backing out of the chat — turns keep running
             // in the background instead of being torn down by the server's
@@ -329,12 +331,13 @@ fun HermexNavGraph(chatVmsHolder: ChatVmsHolder) {
             ChatScreen(
                 sessionId = sessionId,
                 sessionTitle = title,
+                botName = bot,
                 onBack = { navController.popBackStack() },
                 viewModel = chatViewModel,
                 onNavigate = { route -> navController.navigate(route) },
                 onOpenSession = { session ->
                     val encTitle = URLEncoder.encode(session.title ?: session.id, "UTF-8")
-                    navController.navigate("chat/${session.id}/$encTitle") { launchSingleTop = true }
+                    navController.navigate("chat/${session.id}/$encTitle/${URLEncoder.encode(session.source ?: "default", "UTF-8")}") { launchSingleTop = true }
                 },
             )
         }

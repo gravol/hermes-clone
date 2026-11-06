@@ -180,6 +180,7 @@ private val ChatManrope = FontFamily(Font(R.font.manrope_chat_regular))
 fun ChatScreen(
     sessionId: String,
     sessionTitle: String?,
+    botName: String = "default",
     onBack: () -> Unit,
     viewModel: ChatViewModelContract,
     onNavigate: (String) -> Unit = {},
@@ -1495,7 +1496,7 @@ fun ChatScreen(
             // the streaming message item above (see displayTokPerSec above).
 
         }
-            ChatHeader(title = state.sessionTitle, onBack = onBack, onExecution = { showExtendedActivity = !showExtendedActivity },
+            ChatHeader(title = state.sessionTitle, bot = botName, onBack = onBack, onExecution = { showExtendedActivity = !showExtendedActivity },
                 modifier = Modifier.align(Alignment.TopCenter).offset(y = 6.dp))
 
         }
@@ -3048,10 +3049,30 @@ private fun CodeBlockShell(code: String, language: String, content: @Composable 
 }
 
 /** Short display name for a model id (v0.1.88). */
+private val QUANT_TOKENS = setOf("iq2","iq3","iq4","q2","q3","q4","q5","q6","q8","k","k_m","k_s","k_l","xs","xl","s","m","l","0","0_0","b","_0")
+
 private fun shortModelName(model: String): String {
-    // "deepseek/deepseek-v4-pro" → "v4-pro"; "deepseek-v4-flash" → "v4-flash"
-    val last = model.substringAfterLast('/').substringAfterLast(':')
-    return last.removePrefix("deepseek-").removePrefix("deepseek").take(24)
+    // Official chip style: "gpt-5.6-terra" → "GPT-5.6 Terra"; quant suffixes dropped.
+    val last = model.substringAfterLast('/').substringAfterLast(':').lowercase()
+    val parts = last.split('-', '_').filter { it.isNotBlank() }
+    // trim trailing quant chain
+    val cut = parts.indexOfLast { !QUANT_TOKENS.contains(it) && !it.matches(Regex("q[2-8]")) }
+    val kept = if (cut >= 0) parts.take(cut + 1) else parts
+    val sb = StringBuilder()
+    for ((i, tok) in kept.withIndex()) {
+        val pretty = when {
+            tok == "gpt" -> "GPT"
+            tok == "ap" -> "AP"
+            tok.matches(Regex("\\d[\\d.]*")) -> tok
+            else -> tok.replaceFirstChar { it.uppercaseChar() }
+        }
+        when {
+            sb.isEmpty() -> sb.append(pretty)
+            tok.matches(Regex("\\d[\\d.]*")) -> sb.append('-').append(pretty)
+            else -> sb.append(' ').append(pretty)
+        }
+    }
+    return sb.toString().ifBlank { last }.take(24)
 }
 
 /** Reasoning effort label (v0.1.88; v0.1.116: off/minimal/xhigh added). */
@@ -3718,18 +3739,18 @@ private fun ChatCircle(icon: ImageVector, description: String, color: Color, onC
 }
 
 @Composable
-private fun ChatHeader(title: String, onBack: () -> Unit, onExecution: () -> Unit, modifier: Modifier = Modifier) {
+private fun ChatHeader(title: String, bot: String, onBack: () -> Unit, onExecution: () -> Unit, modifier: Modifier = Modifier) {
     var expanded by remember { mutableStateOf(false) }
     Box(modifier.fillMaxWidth().padding(horizontal = 14.dp)) {
         ChatCircle(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Back", Color(0xFF0C1A3C), onBack)
         Column(Modifier.align(Alignment.TopCenter), horizontalAlignment = Alignment.CenterHorizontally) {
-            BlobAvatar(recipeFor("hermes"), size = 44.dp)
-            Text(title.ifBlank { "Hermes" }, modifier = Modifier.widthIn(max = 230.dp).clip(CircleShape).background(Color(0xFF0C1A3C)).padding(horizontal = 12.dp, vertical = 4.dp),
+            BlobAvatar(recipeFor(if (bot == "default") "hermes" else bot.lowercase()), size = 44.dp)
+            Text(if (bot == "default") "Hermes" else bot, modifier = Modifier.widthIn(max = 230.dp).clip(CircleShape).background(Color(0xFF0C1A3C)).padding(horizontal = 12.dp, vertical = 4.dp),
                 color = Color(0xFFF2F4FA), fontFamily = ChatManrope, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Box(Modifier.align(Alignment.TopEnd)) {
             ChatCircle(Icons.Filled.MoreHoriz, "More", Color(0xFF0C1A3C)) { expanded = true }
-            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, modifier = Modifier.width(240.dp).clip(RoundedCornerShape(20.dp)).background(Color(0xFF0C1A3C))) {
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, modifier = Modifier.width(196.dp).clip(RoundedCornerShape(20.dp)).background(Color(0xFF0C1A3C))) {
                 val items = listOf("Live Mode" to Icons.Outlined.GraphicEq, "Terminal" to Icons.Outlined.Terminal,
                     "Execution" to Icons.Outlined.Terminal, "Routines" to Icons.Outlined.Schedule,
                     "Artifacts" to Icons.Outlined.Inventory2, "Archive" to Icons.Outlined.Archive, "Delete" to Icons.Outlined.Delete)
