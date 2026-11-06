@@ -57,6 +57,9 @@ abstract class ChatViewModelContract(application: Application) : AndroidViewMode
     /** v0.1.89: mid-session switch via /model + /reasoning slash commands. */
     open fun applyModelToSession(model: String, reasoning: String, thinkingOn: Boolean = true) {}
 
+    /** Chat Settings sheet: write a new session title (session.title RPC). */
+    open suspend fun renameSession(title: String): Boolean = false
+
     // ── YOLO mode (v0.1.4) — session-scoped approval-skip toggle ──
     /** Load the current YOLO state from the server (for the composer button). */
     /** Toggle YOLO mode on/off for this session. */

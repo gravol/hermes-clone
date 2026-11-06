@@ -117,6 +117,15 @@ class SettingsRepository(context: Context) {
     suspend fun setShowThinking(value: Boolean) = store.setBoolean(KEY_SHOW_THINKING, value)
 
     /** v0.5.4: speak the final assistant reply aloud in the voice-assistant mode. */
+    // Chat Settings sheet (official "In this chat" section). Tool calls +
+    // thinking already have keys above; these three round out the sheet.
+    val foldFinishedTurns: Flow<Boolean> = store.getBoolean(KEY_FOLD_TURNS).map { it ?: true }
+    suspend fun setFoldFinishedTurns(value: Boolean) = store.setBoolean(KEY_FOLD_TURNS, value)
+    val linkPreviews: Flow<Boolean> = store.getBoolean(KEY_LINK_PREVIEWS).map { it ?: true }
+    suspend fun setLinkPreviews(value: Boolean) = store.setBoolean(KEY_LINK_PREVIEWS, value)
+    val deviceActions: Flow<Boolean> = store.getBoolean(KEY_DEVICE_ACTIONS).map { it ?: true }
+    suspend fun setDeviceActions(value: Boolean) = store.setBoolean(KEY_DEVICE_ACTIONS, value)
+
     val voiceRepliesEnabled: Flow<Boolean> =
         store.getBoolean(KEY_VOICE_REPLIES).map { it ?: false }
 
@@ -196,6 +205,9 @@ class SettingsRepository(context: Context) {
         const val KEY_SHOW_THINKING = "show_thinking"
         const val KEY_PINNED_SESSIONS = "pinned_session_ids"
         const val KEY_VOICE_REPLIES = "voice_replies"
+        const val KEY_FOLD_TURNS = "fold_finished_turns"
+        const val KEY_LINK_PREVIEWS = "link_previews"
+        const val KEY_DEVICE_ACTIONS = "device_actions"
         const val KEY_MODEL_PICK = "model_pick"
         const val KEY_REASONING_PICK = "reasoning_pick"
         const val KEY_NTFY_ENABLED = "ntfy_enabled"

@@ -419,7 +419,9 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                     contextUsed = context.first,
                     contextMax = context.second,
                     // v0.1.88: current model from the resume payload
-                    currentModel = (result.info?.get("model") as? JsonObject)?.get("id")
+                    currentCwd = result.info?.get("cwd")?.jsonPrimitive?.contentOrNull
+                        ?: uiState.currentCwd,
+                                        currentModel = (result.info?.get("model") as? JsonObject)?.get("id")
                         ?.jsonPrimitive?.contentOrNull
                         ?: result.info?.get("model")?.jsonPrimitive?.contentOrNull
                         ?: uiState.currentModel,
@@ -2589,7 +2591,18 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
      * "off" effort level so new sessions don't reason. [reasoning] is the chosen
      * non-off level (ignored when [thinkingOn] is false).
      */
-    override fun saveModelPick(model: String, reasoning: String, thinkingOn: Boolean) {
+    override suspend fun renameSession(title: String): Boolean {
+        val sid = sessionId ?: return false
+        val clean = title.trim()
+        if (clean.isEmpty()) return false
+        return runCatching {
+            rpcClient.sessionTitle(sid, clean)
+            uiState = uiState.copy(sessionTitle = clean)
+            true
+        }.getOrDefault(false)
+    }
+
+        override fun saveModelPick(model: String, reasoning: String, thinkingOn: Boolean) {
         val effort = if (thinkingOn) reasoning.ifBlank { DEFAULT_EFFORT } else "off"
         viewModelScope.launch {
             val settingsRepo = SettingsRepository(getApplication())

@@ -73,6 +73,9 @@ data class ChatUiState(
     // v0.1.88: current model + reasoning effort (from resume info / config).
     val currentModel: String? = null,
     val currentReasoning: String? = null,
+    // Session working dir (from session.resume info.cwd) — shown by the
+    // official Chat Settings sheet's Folder row.
+    val currentCwd: String? = null,
     // v0.1.4: YOLO mode (skip approvals this session). Toggled from the
     // composer YOLO button. Not persisted across sessions.
     val yoloEnabled: Boolean = false,

@@ -1145,6 +1145,13 @@ class JsonRpcClient(
         request("session.interrupt", mapOf("session_id" to sessionId))
 
     /** Delete a session server-side. Returns the deleted session id. */
+    /** Read (title=null) or write the stored session title via session.title. */
+    suspend fun sessionTitle(sessionId: String, title: String?): JsonObject =
+        request("session.title", buildMap {
+            put("session_id", sessionId)
+            if (title != null) put("title", title)
+        })
+
     suspend fun sessionDelete(sessionId: String): String {
         val result: DeleteSessionResult = request(
             "session.delete",

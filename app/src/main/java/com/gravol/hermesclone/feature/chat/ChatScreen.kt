@@ -91,6 +91,14 @@ import androidx.compose.material.icons.outlined.RadioButtonUnchecked
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.Lightbulb
+import androidx.compose.material.icons.outlined.Link
+import androidx.compose.material.icons.outlined.PhoneAndroid
+import androidx.compose.material.icons.outlined.UnfoldMore
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Hub
@@ -147,6 +155,10 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -243,6 +255,7 @@ fun ChatScreen(
     // so the meter sees growing content — the old `state` snapshot was stale
     // inside the LaunchedEffect coroutine, always returning the initial empty
     // message → len−lastLen = 0 → tok/s stuck at 0.
+    var streamPhase by remember { mutableStateOf("thinking") } // "thinking" | "decode"
     var streamTokPerSec by remember { mutableStateOf(0f) }
     var streamThinkingTokPerSec by remember { mutableStateOf(0f) }
     // V4 official parity: finished turns collapse to a one-line summary row;
@@ -252,8 +265,10 @@ fun ChatScreen(
         if (!state.isStreaming) {
             streamTokPerSec = 0f
             streamThinkingTokPerSec = 0f
+            streamPhase = "thinking"
             return@LaunchedEffect
         }
+        streamPhase = "thinking"
         var lastLen = viewModel.uiState.messages.lastOrNull { it.isStreaming }?.content?.length ?: 0
         var lastThinkLen = viewModel.uiState.messages.lastOrNull { it.isStreaming }?.thinkingText?.length ?: 0
         var lastTime = System.currentTimeMillis()
@@ -282,6 +297,11 @@ fun ChatScreen(
                     streamThinkingTokPerSec * 0.6f + thinkSample * 0.4f
                 }
                 firstThinkSample = false
+                streamPhase = when {
+                    thinkSample > 0.3f -> "thinking"
+                    sample > 0.3f -> "decode"
+                    else -> streamPhase
+                }
             }
             lastLen = len
             lastThinkLen = thinkLen
@@ -561,6 +581,7 @@ fun ChatScreen(
 
     // ── Model picker (v0.1.88) ──
     var showModelPicker by remember { mutableStateOf(false) }
+    var showChatSettings by remember { mutableStateOf(false) }
     // v0.5.9: Children sheet — live delegated children of this session.
     var showChildren by remember { mutableStateOf(false) }
     var replyTarget by remember { mutableStateOf<UiMessage?>(null) }
@@ -1497,8 +1518,30 @@ fun ChatScreen(
             // the streaming message item above (see displayTokPerSec above).
 
         }
-            ChatHeader(title = state.sessionTitle, bot = botName, thinking = state.isStreaming, onBack = onBack, onExecution = { showExtendedActivity = !showExtendedActivity },
+            ChatHeader(title = state.sessionTitle, bot = botName, thinking = state.isStreaming,
+                phase = streamPhase, tokPerSec = state.liveTokPerSec ?: streamTokPerSec,
+                thinkingTokPerSec = streamThinkingTokPerSec,
+                activity = state.messages.lastOrNull { it.isStreaming }?.toolCalls
+                    ?.lastOrNull { !it.completed }?.let { "Using ${it.toolName}" }
+                    ?: when {
+                        !state.isStreaming -> null
+                        streamPhase == "thinking" -> "Thinking\u2026"
+                        else -> "Answering\u2026"
+                    },
+                onSettingsClick = { showChatSettings = true },
+                onBack = onBack, onExecution = { showExtendedActivity = !showExtendedActivity },
                 modifier = Modifier.align(Alignment.TopCenter).offset(y = 6.dp))
+
+            if (showChatSettings) {
+                ChatSettingsSheet(
+                    title = state.sessionTitle,
+                    cwd = state.currentCwd,
+                    model = state.currentModel,
+                    onRename = { newTitle -> viewModel.renameSession(newTitle) },
+                    onOpenModel = { showChatSettings = false; showModelPicker = true },
+                    onDismiss = { showChatSettings = false },
+                )
+            }
 
         }
     }
@@ -3752,15 +3795,190 @@ private fun ChatCircle(icon: ImageVector, description: String, color: Color, onC
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ChatHeader(title: String, bot: String, onBack: () -> Unit, onExecution: () -> Unit, thinking: Boolean, modifier: Modifier = Modifier) {
+private fun ChatSettingsSheet(
+    title: String,
+    cwd: String?,
+    model: String?,
+    onRename: suspend (String) -> Boolean,
+    onOpenModel: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val ctx = LocalContext.current
+    val repo = remember { com.gravol.hermesclone.feature.settings.SettingsRepository(ctx.applicationContext) }
+    val scope = rememberCoroutineScope()
+    val showToolCalls by repo.showToolCalls.collectAsState(initial = true)
+    val showThinking by repo.showThinking.collectAsState(initial = true)
+    val foldTurns by repo.foldFinishedTurns.collectAsState(initial = true)
+    val linkPreviews by repo.linkPreviews.collectAsState(initial = true)
+    val deviceActions by repo.deviceActions.collectAsState(initial = true)
+    var editing by remember { mutableStateOf(false) }
+    var draft by remember { mutableStateOf(title) }
+    var detailsOpen by remember { mutableStateOf(false) }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = Color(0xFF12123A),
+        scrimColor = Color(0xB307071E),
+        dragHandle = { BottomSheetDefaults.DragHandle(color = Color(0xFF3A3A5C)) },
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 28.dp)) {
+            Text("Chat Settings", color = Color(0xFFF2F4FA), fontFamily = ChatManrope,
+                fontWeight = FontWeight.SemiBold, fontSize = 20.sp,
+                modifier = Modifier.fillMaxWidth().padding(bottom = 18.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+
+            // Top card: Title + Folder
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Color(0xFF181846))) {
+                SheetRow(Icons.Outlined.Edit, "Title", title.ifBlank { "Conversation" },
+                    onClick = { draft = title; editing = true })
+                HorizontalDivider(color = Color.White.copy(alpha = .06f), modifier = Modifier.padding(horizontal = 16.dp))
+                SheetRow(Icons.Outlined.FolderOpen, "Folder", cwd ?: "~", onClick = {})
+            }
+
+            Text("In this chat", color = Color(0xFF8A8AA6), fontFamily = ChatManrope,
+                fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp, top = 18.dp, bottom = 8.dp))
+
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Color(0xFF181846))) {
+                SheetToggle(Icons.Filled.Build, "Tool calls", "Show general tool activity between messages.",
+                    showToolCalls) { scope.launch { repo.setShowToolCalls(it) } }
+                SheetDivider()
+                SheetToggle(Icons.Outlined.PhoneAndroid, "Device actions", "Show calendar, health, location and other device requests between messages.",
+                    deviceActions) { scope.launch { repo.setDeviceActions(it) } }
+                SheetDivider()
+                SheetToggle(Icons.Outlined.Lightbulb, "Thinking", "Show what Hermes reasons through before it answers, when the model shares it.",
+                    showThinking) { scope.launch { repo.setShowThinking(it) } }
+                SheetDivider()
+                SheetToggle(Icons.Outlined.UnfoldMore, "Fold finished turns", "Tuck tool calls and thinking behind one row once Hermes has answered.",
+                    foldTurns) { scope.launch { repo.setFoldFinishedTurns(it) } }
+                SheetDivider()
+                SheetToggle(Icons.Outlined.Link, "Link previews", "Show a card under a reply for each web page it links to.",
+                    linkPreviews) { scope.launch { repo.setLinkPreviews(it) } }
+            }
+
+            Spacer(Modifier.height(18.dp))
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Color(0xFF181846))) {
+                SheetRow(Icons.Filled.BarChart, "Session details", null, onClick = { detailsOpen = !detailsOpen })
+                if (detailsOpen) {
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                        DetailLine("Model", model?.let { shortModelName(it) } ?: "—")
+                        DetailLine("Working dir", cwd ?: "—")
+                    }
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+            TextButton(onClick = onOpenModel, modifier = Modifier.fillMaxWidth()) {
+                Text("Change model & thinking", color = Color(0xFF447CFF), fontFamily = ChatManrope, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+            }
+        }
+    }
+
+    if (editing) {
+        AlertDialog(
+            onDismissRequest = { editing = false },
+            containerColor = Color(0xFF12123A),
+            title = { Text("Session title", color = Color(0xFFF2F4FA), fontFamily = ChatManrope) },
+            text = {
+                OutlinedTextField(value = draft, onValueChange = { draft = it }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color(0xFFF2F4FA), unfocusedTextColor = Color(0xFFF2F4FA),
+                        focusedBorderColor = Color(0xFF447CFF), unfocusedBorderColor = Color(0xFF3A3A5C)))
+            },
+            confirmButton = {
+                TextButton(onClick = { editing = false; val t = draft.trim(); if (t.isNotEmpty()) scope.launch { onRename(t) } }) {
+                    Text("Save", color = Color(0xFF447CFF), fontFamily = ChatManrope, fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = { TextButton(onClick = { editing = false }) { Text("Cancel", color = Color(0xFF8A8AA6), fontFamily = ChatManrope) } },
+        )
+    }
+}
+
+@Composable
+private fun SheetDivider() = HorizontalDivider(color = Color.White.copy(alpha = .06f), modifier = Modifier.padding(horizontal = 16.dp))
+
+@Composable
+private fun SheetRow(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, value: String?, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, null, tint = Color(0xFFB9BDD0), modifier = Modifier.size(22.dp))
+        Spacer(Modifier.width(16.dp))
+        Column(Modifier.weight(1f)) {
+            Text(label, color = Color(0xFFF2F4FA), fontFamily = ChatManrope, fontSize = 17.sp, fontWeight = FontWeight.Medium)
+            if (value != null) Text(value, color = Color(0xFF8A8AA6), fontFamily = ChatManrope, fontSize = 14.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = Color(0xFF5A5A78), modifier = Modifier.size(20.dp))
+    }
+}
+
+@Composable
+private fun SheetToggle(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, desc: String, checked: Boolean, onToggle: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, null, tint = Color(0xFFB9BDD0), modifier = Modifier.size(22.dp))
+        Spacer(Modifier.width(16.dp))
+        Column(Modifier.weight(1f)) {
+            Text(label, color = Color(0xFFF2F4FA), fontFamily = ChatManrope, fontSize = 17.sp, fontWeight = FontWeight.Medium)
+            Text(desc, color = Color(0xFF8A8AA6), fontFamily = ChatManrope, fontSize = 13.sp, lineHeight = 17.sp)
+        }
+        Spacer(Modifier.width(8.dp))
+        Switch(checked = checked, onCheckedChange = onToggle,
+            colors = SwitchDefaults.colors(
+                checkedTrackColor = Color(0xFF447CFF), checkedThumbColor = Color.White,
+                uncheckedTrackColor = Color(0xFF5D5D75), uncheckedThumbColor = Color(0xFFEDEDF2),
+                uncheckedBorderColor = Color.Transparent))
+    }
+}
+
+@Composable
+private fun DetailLine(label: String, value: String) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Text(label, color = Color(0xFF8A8AA6), fontFamily = ChatManrope, fontSize = 13.sp, modifier = Modifier.width(100.dp))
+        Text(value, color = Color(0xFFF2F4FA), fontFamily = ChatManrope, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+@Composable
+private fun ChatHeader(
+    title: String, bot: String, onBack: () -> Unit, onExecution: () -> Unit,
+    thinking: Boolean, phase: String, tokPerSec: Float, thinkingTokPerSec: Float,
+    activity: String?, onSettingsClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     var expanded by remember { mutableStateOf(false) }
+    val name = if (bot == "default") "Hermes" else bot
     Box(modifier.fillMaxWidth().padding(horizontal = 14.dp)) {
         ChatCircle(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Back", Color(0xFF0C1A3C), onBack)
         Column(Modifier.align(Alignment.TopCenter), horizontalAlignment = Alignment.CenterHorizontally) {
-            BlobAvatar(recipeFor(if (bot == "default") "hermes" else bot.lowercase()), size = 44.dp)
-            Text(if (bot == "default") "Hermes" else bot, modifier = Modifier.widthIn(max = 230.dp).clip(CircleShape).background(Color(0xFF0C1A3C)).padding(horizontal = 12.dp, vertical = 4.dp),
-                color = Color(0xFFF2F4FA), fontFamily = ChatManrope, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            // The floating bot icon opens quick chat settings (official parity).
+            Box(Modifier.size(44.dp).clip(CircleShape).clickable(onClick = onSettingsClick),
+                contentAlignment = Alignment.Center) {
+                BlobAvatar(recipeFor(if (bot == "default") "hermes" else bot.lowercase()), size = 44.dp)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(name, modifier = Modifier.widthIn(max = 190.dp).clip(CircleShape)
+                    .background(Color(0xFF0C1A3C)).padding(horizontal = 12.dp, vertical = 4.dp),
+                    color = Color(0xFFF2F4FA), fontFamily = ChatManrope, fontWeight = FontWeight.SemiBold,
+                    fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (thinking) {
+                    Spacer(Modifier.width(6.dp))
+                    val isThinking = phase == "thinking"
+                    val shown = if (isThinking) thinkingTokPerSec else tokPerSec
+                    val label = when {
+                        isThinking && shown > 0.1f -> "thinking ${"%.1f".format(shown)} t/s"
+                        isThinking -> "thinking\u2026"
+                        shown > 0.1f -> "${"%.1f".format(shown)} tok/s"
+                        else -> "wait\u2026"
+                    }
+                    Box(Modifier.clip(CircleShape).background(Color(0xFF0C1A3C))
+                        .padding(horizontal = 9.dp, vertical = 4.dp)) {
+                        Text(label, color = if (isThinking) Color(0xFF8B5CF6) else Color(0xFF447CFF),
+                            fontSize = 12.sp, fontFamily = ChatManrope, fontWeight = FontWeight.Medium)
+                    }
+                }
+            }
             if (thinking) ThinkingTimerPill()
         }
         Box(Modifier.align(Alignment.TopEnd)) {
@@ -3779,3 +3997,4 @@ private fun ChatHeader(title: String, bot: String, onBack: () -> Unit, onExecuti
         }
     }
 }
+
