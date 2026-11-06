@@ -365,7 +365,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                                         m[matchIdx] = m[matchIdx].copy(
                                             preview = it.context ?: m[matchIdx].preview,
                                             result = it.context ?: m[matchIdx].result,
-                                            completed = true,
+                                            completed = true, completedAt = System.currentTimeMillis(),
                                         )
                                     }
                                 } else {
@@ -374,7 +374,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                                         toolName = it.name ?: "tool",
                                         preview = it.context,
                                         result = it.context,
-                                        completed = true,
+                                        completed = true, completedAt = System.currentTimeMillis(),
                                     )
                                 }
                                 out[idx] = prev.copy(toolCalls = merged)
@@ -395,7 +395,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                                         id = tc.id ?: "tc",
                                         toolName = tc.function?.name ?: "unknown",
                                         args = tc.function?.arguments,
-                                        completed = true,
+                                        completed = true, completedAt = System.currentTimeMillis(),
                                     )
                                 } ?: emptyList(),
                                 timestamp = System.currentTimeMillis(),
@@ -2128,7 +2128,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                     // Match by id, or the first not-yet-completed card with
                     // this name (repeated tool runs must update THEIR card).
                     if (tc.id == n.toolId || (tc.toolName == n.toolName && !tc.completed)) tc.copy(
-                        completed = true,
+                        completed = true, completedAt = System.currentTimeMillis(),
                         args = n.args?.toString() ?: tc.args,
                         preview = n.summary ?: tc.preview,
                         result = n.result?.toString(),
@@ -2202,7 +2202,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                         }
                         liveTc.copy(
                             id = serverMatch?.id ?: liveTc.id,
-                            completed = true,
+                            completed = true, completedAt = System.currentTimeMillis(),
                         )
                     }
                     val usage = n.usage?.let {

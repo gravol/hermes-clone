@@ -35,6 +35,9 @@ data class UiToolCall(
     val summary: String? = null,
     val startedAt: Long? = null,
     val completed: Boolean = false,
+    /** Wall-clock ms when tool.complete arrived (turn-duration math for the
+     *  official "Worked for X min, Y sec · N tools" collapsed row). */
+    val completedAt: Long? = null,
     val inlineDiff: String? = null,
 )
 

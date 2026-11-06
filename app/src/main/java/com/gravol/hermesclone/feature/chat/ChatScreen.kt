@@ -92,6 +92,7 @@ import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.FolderOpen
@@ -1384,6 +1385,36 @@ fun ChatScreen(
                     }
                 }
                 else -> {
+            // Official turn grouping: consecutive assistant messages between
+            // user messages are ONE turn; >1 tool call total -> single
+            // collapsed row at the first tool message, rest suppressed.
+            val turnGroupInfo: Map<Int, TurnGroupInfo> = remember(state.messages) {
+                val out = HashMap<Int, TurnGroupInfo>()
+                val anchorOf = HashMap<Int, Int>()
+                val toolMap = HashMap<Int, MutableList<UiToolCall>>()
+                var a = -1
+                state.messages.forEachIndexed { i, m ->
+                    when {
+                        m.role == "user" -> a = -1
+                        m.role == "assistant" && m.toolCalls.isNotEmpty() -> {
+                            if (a == -1) a = i
+                            anchorOf[i] = a
+                            toolMap.getOrPut(a) { ArrayList() }.addAll(m.toolCalls)
+                        }
+                    }
+                }
+                toolMap.forEach { (anchorIdx, tools) ->
+                    if (tools.size > 1) {
+                        val streaming = state.messages.listIterator(anchorIdx)
+                            .asSequence().takeWhile { it.role != "user" }.any { it.isStreaming }
+                        out[anchorIdx] = TurnGroupInfo(true, state.messages[anchorIdx].id, tools.toList(), streaming)
+                        anchorOf.filterValues { it == anchorIdx }.keys.filter { it != anchorIdx }
+                            .forEach { absorbed -> out[absorbed] = TurnGroupInfo(false, "", emptyList(), false) }
+                    }
+                }
+                out
+            }
+
                     LazyColumn(
                         state = listState,
                         modifier = Modifier
@@ -1467,20 +1498,24 @@ fun ChatScreen(
                             if (msg.role == "assistant" &&
                                 showToolCalls && msg.toolCalls.isNotEmpty()
                             ) {
-                                // Official collapsed turn row: "Ran N commands and
-                                // made M tool calls" — green check done, blue
-                                // spinner while the turn streams; tap to expand.
-                                val turnExpanded = expandedTurns[msg.id] == true
-                                if (msg.toolCalls.size == 1) {
+                                // Official groups a WHOLE TURN's tool calls into
+                                // one collapsed row ("Ran N commands and made M
+                                // tool calls" live / "Worked for X min, Y sec ·
+                                // N tools" done) anchored at the first tool
+                                // message; later interim messages in the same
+                                // turn suppress their own sections.
+                                val gi = turnGroupInfo[index]
+                                if (gi == null) {
                                     ToolCallList(toolCalls = msg.toolCalls)
-                                } else TurnSummaryRow(
-                                    toolCalls = msg.toolCalls,
-                                    streaming = msg.isStreaming,
-                                    expanded = turnExpanded,
-                                    onToggle = { expandedTurns[msg.id] = !turnExpanded },
-                                )
-                                if (turnExpanded) {
-                                    ToolCallList(toolCalls = msg.toolCalls)
+                                } else if (gi.anchor) {
+                                    val turnExpanded = expandedTurns[gi.key] == true
+                                    TurnSummaryRow(
+                                        toolCalls = gi.tools,
+                                        streaming = gi.streaming,
+                                        expanded = turnExpanded,
+                                        onToggle = { expandedTurns[gi.key] = !turnExpanded },
+                                    )
+                                    if (turnExpanded) ToolCallList(toolCalls = gi.tools)
                                 }
                             }
                             // v0.8.0: the CURRENT thinking renders INLINE in the
@@ -1494,7 +1529,6 @@ fun ChatScreen(
                                 ThoughtCard(text = msg.thinkingText, streaming = msg.isStreaming)
                             }
 
-                            if (msg.role == "assistant" && msg.isStreaming) LiveThinkingTicker("Thinking…")
                             // Skip the empty bubble for tool-only assistant rows
                             // from history (content blank, not streaming) — the
                             // thinking + tools boxes above already tell the story.
@@ -1509,6 +1543,19 @@ fun ChatScreen(
                                 )
                             }
                         }
+                            if (state.isStreaming) {
+                                item(key = "stop-pill") {
+                                    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                                        horizontalArrangement = Arrangement.End) {
+                                        Text("Stop",
+                                            Modifier.clip(CircleShape).background(Color(0xFF1F3B7D))
+                                                .clickable { viewModel.stopStreaming() }
+                                                .padding(horizontal = 22.dp, vertical = 11.dp),
+                                            color = Color(0xFFF2F4FA), fontFamily = ChatManrope,
+                                            fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                                    }
+                                }
+                            }
                     }
                 }
             }
@@ -1521,13 +1568,12 @@ fun ChatScreen(
             ChatHeader(title = state.sessionTitle, bot = botName, thinking = state.isStreaming,
                 phase = streamPhase, tokPerSec = state.liveTokPerSec ?: streamTokPerSec,
                 thinkingTokPerSec = streamThinkingTokPerSec,
-                activity = state.messages.lastOrNull { it.isStreaming }?.toolCalls
-                    ?.lastOrNull { !it.completed }?.let { "Using ${it.toolName}" }
-                    ?: when {
-                        !state.isStreaming -> null
-                        streamPhase == "thinking" -> "Thinking\u2026"
-                        else -> "Answering\u2026"
-                    },
+                toolName = state.messages.lastOrNull { it.isStreaming }?.toolCalls
+                    ?.lastOrNull { !it.completed }?.toolName,
+                toolPreview = state.messages.lastOrNull { it.isStreaming }?.toolCalls
+                    ?.lastOrNull { !it.completed }?.let { tc -> argsDisplay(tc.args) ?: tc.summary ?: tc.preview },
+                extraTools = (state.messages.lastOrNull { it.isStreaming }?.toolCalls
+                    ?.count { !it.completed && it.toolName != (state.messages.lastOrNull { it.isStreaming }?.toolCalls?.lastOrNull { !it.completed }?.toolName) } ?: 0),
                 onSettingsClick = { showChatSettings = true },
                 onBack = onBack, onExecution = { showExtendedActivity = !showExtendedActivity },
                 modifier = Modifier.align(Alignment.TopCenter).offset(y = 6.dp))
@@ -2099,56 +2145,57 @@ private fun TurnSummaryRow(
     expanded: Boolean,
     onToggle: () -> Unit,
 ) {
-    val commandNames = listOf(
-        "bash", "shell", "terminal", "exec", "execute", "run_command", "subprocess",
-    )
-    val commands = toolCalls.count { tc ->
-        val n = tc.toolName.lowercase()
-        commandNames.any { n.contains(it) }
-    }
+    val commandNames = listOf("bash", "shell", "terminal", "exec", "execute", "run_command", "subprocess")
+    val commands = toolCalls.count { tc -> commandNames.any { tc.toolName.lowercase().contains(it) } }
     val tools = toolCalls.size - commands
-    val text = when {
-        commands > 0 && tools > 0 ->
-            "Ran $commands command${if (commands == 1) "" else "s"} and made $tools tool call${if (tools == 1) "" else "s"}"
+    // Official collapsed-row wording: live = "Ran N commands and made M tool calls"
+    // (blue, spinner); finished = "Worked for X min, Y sec · N tools" (grey, checklist).
+    val liveText = when {
+        commands > 0 && tools > 0 -> "Ran $commands command${if (commands == 1) "" else "s"} and made $tools tool call${if (tools == 1) "" else "s"}"
         commands > 0 -> "Ran $commands command${if (commands == 1) "" else "s"}"
         else -> "Made $tools tool call${if (tools == 1) "" else "s"}"
     }
+    val starts = toolCalls.mapNotNull { it.startedAt }
+    val ends = toolCalls.mapNotNull { it.completedAt }
+    val secs = if (starts.isNotEmpty()) (((ends.maxOrNull() ?: System.currentTimeMillis()) - starts.min()) / 1000L) else 0L
+    val dur = when {
+        secs >= 3600 -> "%d hr, %d min".format(secs / 3600, (secs % 3600) / 60)
+        secs >= 60 -> "%d min, %d sec".format(secs / 60, secs % 60)
+        else -> "$secs sec"
+    }
+    val total = toolCalls.size
+    val doneText = "Worked for $dur \u00b7 $total tool${if (total == 1) "" else "s"}"
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 3.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(Color(0xFF1D5945))
+            .clip(CircleShape)
+            .background(Color(0xFF2A2A4C))
+            .border(1.dp, Color.White.copy(alpha = 0.10f), CircleShape)
             .clickable(onClick = onToggle)
-            .padding(horizontal = 8.dp, vertical = 6.dp),
+            .padding(horizontal = 12.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (streaming) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(13.dp),
-                strokeWidth = 2.dp,
-                color = MaterialTheme.colorScheme.primary,
-            )
+            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = Color(0xFF447CFF))
         } else {
-            Icon(
-                imageVector = Icons.Default.CheckCircle,
-                contentDescription = "Done",
-                modifier = Modifier.size(15.dp),
-                tint = Color(0xFF30D158),
-            )
+            Icon(Icons.Filled.Checklist, null, modifier = Modifier.size(16.dp), tint = Color(0xFF8A8AA6))
         }
-        Spacer(Modifier.width(9.dp))
+        Spacer(Modifier.width(10.dp))
         Text(
-            text = text,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f),
+            text = if (streaming) liveText else doneText,
+            fontFamily = ChatManrope,
+            fontSize = 14.sp,
+            color = if (streaming) Color(0xFF447CFF) else Color(0xFF8A8AA6),
             modifier = Modifier.weight(1f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
         Icon(
             imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
             contentDescription = if (expanded) "Collapse tool calls" else "Expand tool calls",
             modifier = Modifier.size(16.dp),
-            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
+            tint = Color(0xFF8A8AA6),
         )
     }
 }
@@ -2160,6 +2207,21 @@ private fun ToolCallList(
 ) {
     var detail by remember { mutableStateOf<UiToolCall?>(null) }
     val now by remember { mutableStateOf(System.currentTimeMillis()) }
+    val isCmd: (UiToolCall) -> Boolean = { tc ->
+        listOf("bash", "shell", "terminal", "exec", "execute", "run_command", "subprocess")
+            .any { tc.toolName.lowercase().contains(it) }
+    }
+    // Official groups CONSECUTIVE same-kind calls: "Ran N commands" /
+    // "Made N tool calls" (tap to expand); singles render one row each.
+    val groups: List<Pair<Boolean, List<UiToolCall>>> = remember(toolCalls) {
+        val out = mutableListOf<Pair<Boolean, MutableList<UiToolCall>>>()
+        toolCalls.forEach { tc ->
+            val c = isCmd(tc)
+            val last = out.lastOrNull()
+            if (last != null && last.first == c) last.second.add(tc) else out.add(c to mutableListOf(tc))
+        }
+        out.map { it.first to it.second.toList() }
+    }
     Column(
         Modifier
             .fillMaxWidth()
@@ -2168,14 +2230,46 @@ private fun ToolCallList(
     ) {
         segments.filter { it.beforeToolId == null && it.text.isNotBlank() }
             .forEach { ThoughtCard(text = it.text) }
-        toolCalls.forEach { tc ->
-            segments.filter { it.beforeToolId == tc.id && it.text.isNotBlank() }
+        groups.forEach { (cmd, tools) ->
+            segments.filter { it.beforeToolId == tools.first().id && it.text.isNotBlank() }
                 .forEach { ThoughtCard(text = it.text) }
-            ToolCallRow(tc, now) { detail = tc }
+            if (tools.size == 1) {
+                ToolCallRow(tools.first(), now) { detail = tools.first() }
+            } else {
+                GroupToolRow(tools, cmd, onOpen = { detail = it }) { tc -> ToolCallRow(tc, now) { detail = tc } }
+            }
         }
     }
     detail?.let { tc ->
         ToolDetailSheet(toolCall = tc, onDismiss = { detail = null })
+    }
+}
+
+@Composable
+private fun GroupToolRow(
+    tools: List<UiToolCall>,
+    command: Boolean,
+    onOpen: (UiToolCall) -> Unit,
+    render: @Composable (UiToolCall) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            Modifier.fillMaxWidth().clip(CircleShape).background(Color(0xFF1D5945))
+                .clickable { open = !open }.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Filled.Checklist, null, tint = Color(0xFF30D158), modifier = Modifier.size(15.dp))
+            Spacer(Modifier.width(10.dp))
+            Text(
+                if (command) "Ran ${tools.size} commands" else "Made ${tools.size} tool calls",
+                color = Color(0xFFF2F4FA), fontFamily = ChatManrope, fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f),
+            )
+            Icon(if (open) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null,
+                tint = Color(0xFF8A8AA6), modifier = Modifier.size(16.dp))
+        }
+        if (open) tools.forEach { render(it) }
     }
 }
 
@@ -3776,15 +3870,28 @@ private fun InlineClarifyCard(
 
 
 @Composable
-private fun ThinkingTimerPill() {
+private fun LiveActivityPill(phase: String, toolName: String?, toolPreview: String?, extraTools: Int) {
     var elapsed by remember { mutableIntStateOf(0) }
     LaunchedEffect(Unit) { while (true) { delay(1000); elapsed++ } }
-    Row(Modifier.padding(top = 4.dp).clip(CircleShape).background(Color(0xFF0C1A3C)).padding(horizontal = 10.dp, vertical = 3.dp),
-        verticalAlignment = Alignment.CenterVertically) {
-        Icon(Icons.Filled.Psychology, null, tint = Color(0xFFB9BDD0), modifier = Modifier.size(13.dp))
-        Spacer(Modifier.width(5.dp))
-        Text("Thinking… %d:%02d".format(elapsed / 60, elapsed % 60),
-            color = Color(0xFFB9BDD0), fontSize = 13.sp, fontFamily = ChatManrope)
+    val time = "%d:%02d".format(elapsed / 60, elapsed % 60)
+    val label: String = if (toolName != null) {
+        val plus = if (extraTools > 0) " + $extraTools command${if (extraTools == 1) "" else "s"}" else ""
+        val prev = toolPreview?.replace('\n', ' ')?.trim().orEmpty()
+        ("Using $toolName: $prev$plus").trim().trimEnd(':', ' ')
+    } else if (phase == "thinking") "Thinking\u2026" else "Answering\u2026"
+    Row(
+        Modifier.padding(top = 4.dp).clip(CircleShape).background(Color(0xFF0C1A3C))
+            .padding(horizontal = 10.dp, vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (toolName == null) {
+            Icon(Icons.Filled.Psychology, null, tint = Color(0xFFB9BDD0), modifier = Modifier.size(13.dp))
+            Spacer(Modifier.width(5.dp))
+        }
+        Text(label, color = Color(0xFFB9BDD0), fontSize = 13.sp, fontFamily = ChatManrope,
+            maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 190.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(time, color = Color(0xFF676571), fontSize = 13.sp, fontFamily = ChatManrope)
     }
 }
 
@@ -3944,7 +4051,7 @@ private fun DetailLine(label: String, value: String) {
 private fun ChatHeader(
     title: String, bot: String, onBack: () -> Unit, onExecution: () -> Unit,
     thinking: Boolean, phase: String, tokPerSec: Float, thinkingTokPerSec: Float,
-    activity: String?, onSettingsClick: () -> Unit,
+    toolName: String?, toolPreview: String?, extraTools: Int, onSettingsClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -3962,7 +4069,7 @@ private fun ChatHeader(
                     .background(Color(0xFF0C1A3C)).padding(horizontal = 12.dp, vertical = 4.dp),
                     color = Color(0xFFF2F4FA), fontFamily = ChatManrope, fontWeight = FontWeight.SemiBold,
                     fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (thinking) {
+                if (thinking && toolName == null) {
                     Spacer(Modifier.width(6.dp))
                     val isThinking = phase == "thinking"
                     val shown = if (isThinking) thinkingTokPerSec else tokPerSec
@@ -3979,7 +4086,7 @@ private fun ChatHeader(
                     }
                 }
             }
-            if (thinking) ThinkingTimerPill()
+            if (thinking) LiveActivityPill(phase, toolName, toolPreview, extraTools)
         }
         Box(Modifier.align(Alignment.TopEnd)) {
             ChatCircle(Icons.Filled.MoreHoriz, "More", Color(0xFF0C1A3C)) { expanded = true }
@@ -3998,3 +4105,7 @@ private fun ChatHeader(
     }
 }
 
+
+
+/** Turn-group metadata for the official collapsed turn row (see turnGroupInfo). */
+private class TurnGroupInfo(val anchor: Boolean, val key: String, val tools: List<UiToolCall>, val streaming: Boolean)
