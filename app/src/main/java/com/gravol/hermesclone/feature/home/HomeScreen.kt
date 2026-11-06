@@ -125,7 +125,16 @@ fun HomeScreen(
     viewModel: SessionsViewModel = viewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val bots by viewModel.bots.collectAsStateWithLifecycle()
     val activeMap by activeSessions.collectAsStateWithLifecycle()
+    val workingIds by viewModel.working.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) { viewModel.loadBots() }
+    LaunchedEffect(Unit) {
+        while (true) {
+            viewModel.refreshWorking()
+            kotlinx.coroutines.delay(4_000)
+        }
+    }
     var query by rememberSaveable { mutableStateOf("") }
     var showFilters by rememberSaveable { mutableStateOf(false) }
     var showMore by rememberSaveable { mutableStateOf(false) }
@@ -142,25 +151,59 @@ fun HomeScreen(
     val windowStartSec = remember(windowDays) {
         (System.currentTimeMillis() / 1000.0) - windowDays * 86_400.0
     }
-    val homeVisible = remember(state.sessions, q, windowStartSec) {
+    val homeVisibleLegacy = remember(state.sessions, q, windowStartSec) {
         state.sessions.filter { s ->
             val ts = s.lastActivityTs()
-            (ts == null || ts >= windowStartSec) &&
+            (ts == null || ts * 1000.0 >= windowStartSec * 1000.0) &&
                 (q.isEmpty() ||
                     (s.title ?: "").contains(q, ignoreCase = true) ||
                     (s.preview ?: "").contains(q, ignoreCase = true) ||
                     agentDisplayName(agentKeyFor(s)).contains(q, ignoreCase = true))
         }
     }
-    val groups = remember(homeVisible) {
-        homeVisible.groupBy { agentKeyFor(it) }
+    // ── Bot model (official): groups come from the profiles roster; each bot
+    // shows its own sessions. Fallback: group loaded sessions by source.
+    val windowOk: (Double?) -> Boolean = { ts -> ts == null || ts * 1000.0 >= windowStartSec * 1000.0 }
+    val displayGroups: List<HomeAgentGroup> = if (bots.isNotEmpty()) {
+        bots.mapNotNull { b ->
+            val sessions = b.sessions
+                .filter { windowOk(it.last_activity_at ?: it.started_at) }
+                .filter { s ->
+                    q.isEmpty() ||
+                        (s.title ?: "").contains(q, ignoreCase = true) ||
+                        (s.preview ?: "").contains(q, ignoreCase = true) ||
+                        b.displayName.contains(q, ignoreCase = true)
+                }
+                .map { info ->
+                    SessionSummary(
+                        id = info.id, title = info.title, source = b.name, model = info.model,
+                        startedAt = info.started_at, lastActivityAt = info.last_activity_at,
+                        lastActive = info.last_activity_at, preview = info.preview,
+                        messageCount = info.message_count ?: 0,
+                    )
+                }
+            // Bots with no matching sessions hide while searching; visible when idle ("say hi").
+            if (sessions.isEmpty() && (q.isNotEmpty() || windowDays != 0 && b.lastSessionTs == null)) return@mapNotNull null
+            HomeAgentGroup(
+                key = b.displayName.lowercase(),
+                name = b.displayName,
+                description = b.description.ifBlank { "No conversations yet — say hi" },
+                lastTs = b.sessions
+                    .mapNotNull { it.started_at }.minOrNull()
+                    ?.takeIf {
+                        System.currentTimeMillis() / 1000.0 - it < 30 * 86_400.0
+                    },
+                sessions = sessions.sortedByDescending { it.lastActivityTs() ?: 0.0 },
+            )
+        }
+    } else {
+        homeVisibleLegacy
+            .groupBy { agentKeyFor(it) }
             .map { (key, list) ->
                 val sorted = list.sortedByDescending { it.lastActivityTs() ?: 0.0 }
                 HomeAgentGroup(
-                    key = key,
-                    name = agentDisplayName(key),
-                    description = sorted.firstOrNull()?.preview?.take(80)
-                        ?: "No conversations yet — say hi",
+                    key = key, name = agentDisplayName(key),
+                    description = "No conversations yet — say hi",
                     lastTs = sorted.maxOfOrNull { it.lastActivityTs() ?: 0.0 },
                     sessions = sorted,
                 )
@@ -170,10 +213,12 @@ fun HomeScreen(
                 else g.sortedByDescending { it.lastTs ?: 0.0 }
             }
     }
+
     // Official seeds the most recent group expanded on first load.
-    LaunchedEffect(groups.map { it.key }) {
-        if (!seeded && groups.isNotEmpty()) {
-            expand[groups.first().key] = PEEK
+    LaunchedEffect(displayGroups.map { it.key }) {
+        val first = displayGroups.firstOrNull()?.key ?: return@LaunchedEffect
+        if ((seeded || expand.values.none { it > 0 }) && expand[first] == null) {
+            expand[first] = PEEK
             seeded = true
         }
     }
@@ -207,7 +252,7 @@ fun HomeScreen(
         // ── content tree ──
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(top = 44.dp, bottom = 96.dp),
+            contentPadding = PaddingValues(top = 112.dp, bottom = 96.dp),
         ) {
             item {
                 Row(
@@ -227,10 +272,10 @@ fun HomeScreen(
                 }
             }
             if (!agentsCollapsed) {
-                if (homeVisible.isEmpty() && !state.isLoading) {
+                if (displayGroups.isEmpty() && !state.isLoading) {
                     item { NoMatchingAgents(searching = q.isNotEmpty()) }
                 }
-                groups.forEach { group ->
+                displayGroups.forEach { group ->
                     item(key = "agent-${group.key}") {
                         AgentRow(
                             group = group,
@@ -253,7 +298,7 @@ fun HomeScreen(
                                 session = session,
                                 first = index == 0,
                                 last = index == visibleKids.lastIndex,
-                                working = activeMap[session.id] == true,
+                                working = activeMap[session.id] == true || workingIds.contains(session.id),
                                 onClick = { onSessionTap(session) },
                                 onLongClick = { menuSession = session },
                             )
@@ -590,7 +635,7 @@ private fun MoreSessionsRow(hidden: Int, onClick: () -> Unit) {
     ) {
         Text(
             "$hidden more session${if (hidden == 1) "" else "s"}",
-            color = HermesTextTertiary, fontSize = 14.sp,
+            color = HermesMuted, fontSize = 14.sp,
         )
         Spacer(Modifier.width(4.dp))
         Icon(Icons.Filled.KeyboardArrowRight, null, tint = HermesTextTertiary, modifier = Modifier.size(15.dp))

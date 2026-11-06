@@ -811,6 +811,43 @@ class JsonRpcClient(
         return result.sessions
     }
 
+    /** Official home: sessions belonging to one bot (profile), per the gateway's profile scoping. */
+    suspend fun sessionList(limit: Int = 25, profile: String): List<SessionInfo> {
+        val result: SessionListResult = request("session.list", mapOf("limit" to limit, "profile" to profile))
+        return result.sessions
+    }
+
+    @Serializable
+    data class ActiveRow(
+        val id: String,
+        @SerialName("session_key") val sessionKey: String? = null,
+        val status: String = "idle",
+    )
+
+    @Serializable
+    private data class ActiveListResult(val sessions: List<ActiveRow> = emptyList())
+
+    /** Live in-process sessions; status == "streaming" renders the Working badge. */
+    suspend fun activeList(): List<ActiveRow> =
+        request<ActiveListResult>("session.active_list", emptyMap()).sessions
+
+    @Serializable
+    data class ProfileRow(
+        val name: String,
+        val description: String = "",
+        @SerialName("display_name") val displayName: String = "",
+        @SerialName("is_default") val isDefault: Boolean = false,
+        @SerialName("has_avatar") val hasAvatar: Boolean = false,
+        val model: String? = null,
+    )
+
+    @Serializable
+    private data class ProfileListResult(val profiles: List<ProfileRow> = emptyList())
+
+    /** The bot roster driving the official home's "Bots and sessions" layout. */
+    suspend fun profilesList(): List<ProfileRow> =
+        request<ProfileListResult>("profiles.list", emptyMap()).profiles
+
     /**
      * v0.5.1: token/cost rollup for one window (DAY=1, WEEK=7, MONTH=30), computed by the gateway.
      *

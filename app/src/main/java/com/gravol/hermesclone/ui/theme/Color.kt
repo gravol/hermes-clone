@@ -13,10 +13,11 @@ val HermesBackdrop = Color(0xFF101A3C)
 // Text
 val HermesTextPrimary = Color(0xFFF2F4FA)
 val HermesTextSecondary = Color(0xFF8A93B8)  // subtitles, times
-val HermesTextTertiary = Color(0xFF5D6690)   // "N more sessions", hints
+val HermesTextTertiary = Color(0xFF5D6690)   // hints, row times
+val HermesMuted = Color(0xFF676571)           // "N more sessions" (sampled)
 
 // Accents
-val HermesAccent = Color(0xFF3078F0)        // unread dots, Working, links
+val HermesAccent = Color(0xFF447CFF)        // unread dots, Working, links
 val HermesFab = Color(0xFF1D2761)           // compose FAB / send circle
 val HermesFabBright = Color(0xFF2A3A8C)
 val HermesError = Color(0xFFFF6B6B)

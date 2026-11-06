@@ -1,5 +1,8 @@
 package com.gravol.hermesclone.feature.sessions
 
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import android.app.Application
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
@@ -307,6 +310,79 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    // ── Official home bot model ──────────────────────────────────────────────
+    /** profiles.list row + its sessions, ready for the home tree. */
+    data class BotGroup(
+        val name: String,
+        val displayName: String,
+        val description: String,
+        val hasAvatar: Boolean,
+        val lastSessionTs: Double?,
+        val sessions: List<JsonRpcClient.SessionInfo>,
+    )
+
+    private val _bots = MutableStateFlow<List<BotGroup>>(emptyList())
+    val bots: StateFlow<List<BotGroup>> = _bots.asStateFlow()
+    private var botsLoadedOnce = false
+
+    /** Roster + per-bot sessions, in parallel. Mirrors the official home fetch. */
+    private val _working = MutableStateFlow<Set<String>>(emptySet())
+    val working: StateFlow<Set<String>> = _working.asStateFlow()
+
+    /** One poll of live sessions; ids + session_keys whose status is streaming. */
+    fun refreshWorking() {
+        viewModelScope.launch {
+            val client = sharedRpc.takeIf { sharedWs.isConnected } ?: return@launch
+            runCatching {
+                _working.value = client.activeList()
+                    .filter { it.status == "streaming" || it.status == "working" }
+                    .flatMap { listOf(it.id) + listOfNotNull(it.sessionKey) }
+                    .toSet()
+            }
+        }
+    }
+
+    fun loadBots(force: Boolean = false) {
+        if (botsLoadedOnce && !force) return
+        viewModelScope.launch {
+            val client = sharedRpc.takeIf { sharedWs.isConnected } ?: ensureShared() ?: return@launch
+            runCatching {
+                val profiles = client.profilesList()
+                val perBot = coroutineScope {
+                    profiles.map { p ->
+                        async {
+                            p.name to runCatching { client.sessionList(limit = 50, profile = p.name) }
+                                .getOrDefault(emptyList())
+                        }
+                    }.awaitAll().toMap()
+                }
+                val groups = profiles.map { p ->
+                    val sessions = perBot[p.name].orEmpty().sortedByDescending { it.last_activity_at ?: it.started_at ?: 0.0 }
+                    BotGroup(
+                        name = p.name,
+                        displayName = when {
+                            p.displayName.isNotBlank() -> p.displayName
+                            p.isDefault -> "Hermes"
+                            else -> p.name
+                        },
+                        description = p.description,
+                        hasAvatar = p.hasAvatar,
+                        lastSessionTs = sessions.firstOrNull()?.let { it.last_activity_at ?: it.started_at },
+                        sessions = sessions,
+                    )
+                }.sortedWith(
+                    compareByDescending<BotGroup> { g -> g.lastSessionTs ?: g.sessions.maxOfOrNull { it.last_activity_at ?: it.started_at ?: 0.0 } ?: 0.0 }
+                        .thenBy { it.name }
+                )
+                _bots.value = groups
+                botsLoadedOnce = true
+                DebugLog.log("INFO", "SessionsVM", "bots loaded: ${groups.size} profiles")
+            }.onFailure {
+                DebugLog.log("ERROR", "SessionsVM", "bots load failed: ${it.message}")
+            }
+        }
+    }
+
     fun loadSessions() {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, error = null)
@@ -427,6 +503,7 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
         reloadInFlight = true
         try {
             loadDashboardSessionsInner()
+            loadBots(force = true)
         } finally {
             reloadInFlight = false
         }
