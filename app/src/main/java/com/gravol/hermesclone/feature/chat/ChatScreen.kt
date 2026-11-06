@@ -1279,7 +1279,11 @@ fun ChatScreen(
                         }
                     }
                     BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)
-                        .height(if (activeComposer) 106.dp else 52.dp)
+                        // v0.2.4: was a FIXED height — a 3-line draft overflowed
+                        // into the model-chip/mic row ("text behind the buttons"
+                        // on the 10a). Now the card grows to fit the text; the
+                        // chip row stays pinned to the bottom of the grown card.
+                        .heightIn(min = if (activeComposer) 106.dp else 52.dp, max = 210.dp)
                         .clip(RoundedCornerShape(if (activeComposer) 24.dp else 50.dp))
                         .background(Color(0xFF0C1A3C)).border(1.dp, Color.White.copy(alpha = .07f), RoundedCornerShape(if (activeComposer) 24.dp else 50.dp))) {
                         BasicTextField(value = composerText, onValueChange = { composerText = it },
@@ -1469,7 +1473,7 @@ fun ChatScreen(
                                     }
                                 }
                             }),
-                        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 118.dp, bottom = 170.dp),
+                        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 118.dp, bottom = 16.dp),
                     ) {
                         itemsIndexed(state.messages, key = { _, msg -> msg.id }) { index, msg ->
                             val sameSender = index > 0 && state.messages[index - 1].role == msg.role
