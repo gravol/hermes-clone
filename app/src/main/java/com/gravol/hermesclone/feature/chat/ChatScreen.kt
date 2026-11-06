@@ -23,6 +23,8 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.BorderStroke
@@ -323,10 +325,35 @@ fun ChatScreen(
             val added = uris.mapNotNull { uri ->
                 downscaleAndDecode(context, uri)?.let { it to bitmapToDataUrl(it) }
             }
-            if (added.isEmpty()) {
-                Toast.makeText(context, "Couldn't read image", Toast.LENGTH_SHORT).show()
-            } else {
+            if (added.isNotEmpty()) {
                 pendingImages = (pendingImages + added).take(8)
+            } else {
+                // v0.2.3: exotic formats / picker URIs the bitmap decoder
+                // rejects (HEIC on some ROMs, GrapheneOS document URIs) —
+                // ship the RAW bytes through the file channel instead; the
+                // gateway resizes and decodes images server-side anyway.
+                var sent = 0
+                uris.forEach { uri ->
+                    try {
+                        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        if (bytes != null && bytes.isNotEmpty() && bytes.size <= 12_000_000) {
+                            val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                            val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
+                            // Gateway sniffs the extension from the filename hint —
+                            // keep it .jpg so exotic mimes (HEIC) pass the allowlist;
+                            // the vision pipeline re-encodes server-side.
+                            viewModel.sendMessageWithImages(
+                                "",
+                                listOf("data:$mime;base64,$b64"),
+                            )
+                            sent++
+                        }
+                    } catch (_: Exception) {
+                    }
+                }
+                if (sent == 0) {
+                    Toast.makeText(context, "Couldn't read image", Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }
@@ -896,9 +923,15 @@ fun ChatScreen(
                 }
                 AttachOption(Icons.Outlined.PhotoLibrary, "Photo Library") {
                     showAttachSheet = false
-                    imagePicker.launch(
-                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
-                    )
+                    try {
+                        imagePicker.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                        )
+                    } catch (_: android.content.ActivityNotFoundException) {
+                        // v0.2.3: no system photo picker (GrapheneOS et al.) —
+                        // fall back to the Storage Access Framework document UI.
+                        filePicker.launch(arrayOf("image/*"))
+                    }
                 }
                 AttachOption(Icons.Outlined.Folder, "Files") {
                     showAttachSheet = false
@@ -1404,7 +1437,7 @@ fun ChatScreen(
                     }
                 }
                 toolMap.forEach { (anchorIdx, tools) ->
-                    if (tools.size > 1) {
+                    if (tools.isNotEmpty()) {
                         val streaming = state.messages.listIterator(anchorIdx)
                             .asSequence().takeWhile { it.role != "user" }.any { it.isStreaming }
                         out[anchorIdx] = TurnGroupInfo(true, state.messages[anchorIdx].id, tools.toList(), streaming)
@@ -1436,7 +1469,7 @@ fun ChatScreen(
                                     }
                                 }
                             }),
-                        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 8.dp),
+                        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 118.dp, bottom = 170.dp),
                     ) {
                         itemsIndexed(state.messages, key = { _, msg -> msg.id }) { index, msg ->
                             val sameSender = index > 0 && state.messages[index - 1].role == msg.role
@@ -1486,7 +1519,7 @@ fun ChatScreen(
                             // them). Rows respect the tool toggle; segments the
                             // thinking toggle.
                             if (msg.role == "assistant" &&
-                                showExtendedActivity && showThinking && msg.priorThinking.isNotEmpty()
+                                showThinking && msg.priorThinking.isNotEmpty()
                             ) {
                                 // Thinking segments stay on the timeline; the tool
                                 // calls collapse into the official turn-summary row.
@@ -1523,8 +1556,8 @@ fun ChatScreen(
                             // collapsed THOUGHT after). It sits after the
                             // timeline above because any thinking that PRECEDED
                             // a tool call was anchored there as a segment.
-                            if (msg.role == "assistant" && showExtendedActivity && !msg.isStreaming && msg.thinkingText?.isNotBlank() == true &&
-                                showThinking
+                            if (msg.role == "assistant" && showThinking &&
+                                msg.thinkingText?.isNotBlank() == true
                             ) {
                                 ThoughtCard(text = msg.thinkingText, streaming = msg.isStreaming)
                             }
@@ -1532,9 +1565,12 @@ fun ChatScreen(
                             // Skip the empty bubble for tool-only assistant rows
                             // from history (content blank, not streaming) — the
                             // thinking + tools boxes above already tell the story.
+                            val suppressEmptyBubble = msg.isStreaming &&
+                                msg.content.isBlank() &&
+                                (msg.thinkingText?.isNotBlank() == true || msg.priorThinking.isNotEmpty())
                             if (msg.isCommandAck) {
                                 CommandAckLine(text = msg.content)
-                            } else if (msg.content.isNotBlank() || msg.isStreaming) {
+                            } else if ((msg.content.isNotBlank() || msg.isStreaming) && !suppressEmptyBubble) {
                                 MessageBubble(
                                     message = msg,
                                     sameSender = sameSender,
@@ -1543,19 +1579,10 @@ fun ChatScreen(
                                 )
                             }
                         }
-                            if (state.isStreaming) {
-                                item(key = "stop-pill") {
-                                    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                                        horizontalArrangement = Arrangement.End) {
-                                        Text("Stop",
-                                            Modifier.clip(CircleShape).background(Color(0xFF1F3B7D))
-                                                .clickable { viewModel.stopStreaming() }
-                                                .padding(horizontal = 22.dp, vertical = 11.dp),
-                                            color = Color(0xFFF2F4FA), fontFamily = ChatManrope,
-                                            fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                                    }
-                                }
-                            }
+                            // v0.2.3: the in-stream Stop pill is GONE — the composer's
+                            // stop square is the only stop affordance (official parity).
+                            // A stuck streaming state used to leave this pill on every
+                            // message, which read as "Stop appears on every send".
                     }
                 }
             }
@@ -1565,6 +1592,24 @@ fun ChatScreen(
             // the streaming message item above (see displayTokPerSec above).
 
         }
+            // v0.2.3: official-style top scrim — transcript content fades out
+            // under the floating header instead of sliding behind it.
+            Box(
+                Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .height(170.dp)
+                    .background(
+                        androidx.compose.ui.graphics.Brush.verticalGradient(
+                            listOf(
+                                androidx.compose.ui.graphics.Color(0xFF000022.toInt()),
+                                androidx.compose.ui.graphics.Color(0xF2000022.toInt()),
+                                androidx.compose.ui.graphics.Color(0x00000022),
+                            ),
+                        ),
+                    ),
+                contentAlignment = Alignment.TopCenter,
+            ) {}
             ChatHeader(title = state.sessionTitle, bot = botName, thinking = state.isStreaming,
                 phase = streamPhase, tokPerSec = state.liveTokPerSec ?: streamTokPerSec,
                 thinkingTokPerSec = streamThinkingTokPerSec,
@@ -2079,7 +2124,13 @@ private fun ThoughtCard(text: String, streaming: Boolean = false) {
                     overflow = TextOverflow.Ellipsis,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
                 )
-            } else if (streaming) {
+            }
+            AnimatedVisibility(
+                visible = effectiveExpanded,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut(),
+            ) {
+                if (streaming) {
                 // Live (v0.8.1): capped at ~4 lines with its own scroll that
                 // follows the tail — the box never dominates the screen.
                 Spacer(Modifier.height(4.dp))
@@ -2120,6 +2171,7 @@ private fun ThoughtCard(text: String, streaming: Boolean = false) {
                         ),
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
                     )
+                }
                 }
             }
         }
@@ -2222,24 +2274,30 @@ private fun ToolCallList(
         }
         out.map { it.first to it.second.toList() }
     }
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(vertical = 2.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        segments.filter { it.beforeToolId == null && it.text.isNotBlank() }
-            .forEach { ThoughtCard(text = it.text) }
-        groups.forEach { (cmd, tools) ->
-            segments.filter { it.beforeToolId == tools.first().id && it.text.isNotBlank() }
-                .forEach { ThoughtCard(text = it.text) }
-            if (tools.size == 1) {
-                ToolCallRow(tools.first(), now) { detail = tools.first() }
-            } else {
-                GroupToolRow(tools, cmd, onOpen = { detail = it }) { tc -> ToolCallRow(tc, now) { detail = tc } }
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(vertical = 2.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            val rendered = mutableSetOf<ThinkingSeg>()
+            segments.filter { it.beforeToolId == null && it.text.isNotBlank() }
+                .forEach { rendered += it; ThoughtCard(text = it.text) }
+            groups.forEach { (cmd, tools) ->
+                segments.filter { it.beforeToolId == tools.first().id && it.text.isNotBlank() && it !in rendered }
+                    .forEach { rendered += it; ThoughtCard(text = it.text) }
+                if (tools.size == 1) {
+                    ToolCallRow(tools.first(), now) { detail = tools.first() }
+                } else {
+                    GroupToolRow(tools, cmd, onOpen = { detail = it }) { tc -> ToolCallRow(tc, now) { detail = tc } }
+                }
             }
+            // v0.2.3: segments anchored to a tool that isn't rendered here
+            // (the turn-summary path passes toolCalls = emptyList()) were
+            // being silently dropped — that's why thinking boxes vanished.
+            segments.filter { it !in rendered && it.text.isNotBlank() }
+                .forEach { ThoughtCard(text = it.text) }
         }
-    }
     detail?.let { tc ->
         ToolDetailSheet(toolCall = tc, onDismiss = { detail = null })
     }
@@ -2897,9 +2955,30 @@ private fun downscaleAndDecode(context: Context, uri: Uri): Bitmap? {
         val opts = BitmapFactory.Options().apply {
             inSampleSize = decodeSampleSize(bounds.outWidth, bounds.outHeight, MAX_ATTACH_DIM)
         }
-        context.contentResolver.openInputStream(uri)?.use {
+        val direct = context.contentResolver.openInputStream(uri)?.use {
             BitmapFactory.decodeStream(it, null, opts)
         }
+        if (direct != null) return direct
+        // v0.2.3: HEIF/AVIF and other formats BitmapFactory won't touch —
+        // ImageDecoder handles them on API 28+ (Pixel camera default is HEIC
+        // when the HEIF format toggle is on).
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            try {
+                val src = android.graphics.ImageDecoder.createSource(
+                    context.contentResolver, uri,
+                )
+                val sample = decodeSampleSize(bounds.outWidth, bounds.outHeight, MAX_ATTACH_DIM)
+                return if (sample > 1) {
+                    android.graphics.ImageDecoder.decodeBitmap(src) { decoder, _, _ ->
+                        decoder.setTargetSampleSize(sample)
+                    }
+                } else {
+                    android.graphics.ImageDecoder.decodeBitmap(src)
+                }
+            } catch (_: Exception) {
+            }
+        }
+        null
     } catch (_: Exception) {
         null
     } catch (_: OutOfMemoryError) {
