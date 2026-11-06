@@ -31,7 +31,20 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.graphics.SolidColor
+import com.gravol.hermesclone.ui.orb.BlobAvatar
+import com.gravol.hermesclone.ui.orb.recipeFor
+import com.gravol.hermesclone.R
+import androidx.compose.ui.text.font.Font
+import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Archive
+import androidx.compose.material.icons.outlined.Schedule
+import androidx.compose.material.icons.outlined.Inventory2
+import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
@@ -160,6 +173,8 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
+private val ChatManrope = FontFamily(Font(R.font.manrope_chat_regular))
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ChatScreen(
@@ -196,6 +211,8 @@ fun ChatScreen(
     }
     val listState = rememberLazyListState()
     var composerText by remember { mutableStateOf("") }
+    // The official timeline hides extended diagnostic cards by default.
+    var showExtendedActivity by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -899,145 +916,11 @@ fun ChatScreen(
 
     Scaffold(
         modifier = Modifier.imePadding(),
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            text = state.sessionTitle,
-                            style = MaterialTheme.typography.labelLarge,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        // Live context-window occupancy (session.info usage).
-                        // v0.1.71: ALWAYS visible once the chat is open —
-                        // mirrors the desktop's never-blank behavior. Shows
-                        // the last-known reading when the server is quiet
-                        // (e.g. reaped agent after app update), and "—" before
-                        // any reading exists, instead of hiding the slot.
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            // v0.1.88: model chip — shows current model + reasoning
-                            // effort; tap opens the picker sheet.
-                            val modelText = buildString {
-                                append(state.currentModel?.let { shortModelName(it) } ?: "")
-                                if (isNotBlank()) append(" · ")
-                                append(state.currentReasoning?.let { effortShort(it) } ?: "")
-                            }
-                            if (modelText.isNotBlank()) {
-                                Text(
-                                    text = modelText,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .clickable { showModelPicker = true }
-                                        .padding(horizontal = 4.dp, vertical = 1.dp),
-                                )
-                            }
-                        }
-                        // v0.5.5: honest connection status. "Reconnecting…" is delayed
-                        // 1.5 s so brief reconnect blips never flash; the restored
-                        // notice shows 6 s and distinguishes a gateway restart (the
-                        // socket closed gracefully) from a dropped route.
-                        val notice = viewModel.connectionNotice
-                        var statusVisible by remember { mutableStateOf(false) }
-                        LaunchedEffect(notice) {
-                            when (notice) {
-                                null -> statusVisible = false
-                                is ConnectionNotice.Reconnecting -> {
-                                    delay(1_500)
-                                    statusVisible = viewModel.connectionNotice is ConnectionNotice.Reconnecting
-                                }
-                                is ConnectionNotice.Restored -> {
-                                    statusVisible = true
-                                    delay(6_000)
-                                    viewModel.clearConnectionNotice()
-                                    statusVisible = viewModel.connectionNotice is ConnectionNotice.Reconnecting
-                                }
-                            }
-                        }
-                        if (statusVisible && notice != null) {
-                            Text(
-                                text = when (notice) {
-                                    is ConnectionNotice.Restored ->
-                                        if (notice.reason == WsConnectionManager.DropReason.GatewayRestarted)
-                                            "Gateway restarted — reconnected ✓"
-                                        else "Reconnected ✓"
-                                    else -> "Reconnecting…"
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (notice is ConnectionNotice.Restored)
-                                    MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.error,
-                                maxLines = 1,
-                            )
-                        }
-                    }
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                // v0.1.96: quick tool-call visibility toggle — wrench icon,
-                // tinted when shown, dimmed when hidden.
-                actions = {
-                    IconButton(
-                        onClick = { scope.launch { drawerState.open() } },
-                    ) {
-                        Icon(Icons.Filled.Menu, contentDescription = "Menu")
-                    }
-                    IconButton(
-                        onClick = { scope.launch { settingsRepo.setShowToolCalls(!showToolCalls) } },
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Handyman,
-                            contentDescription = if (showToolCalls) "Hide tool calls" else "Show tool calls",
-                            tint = if (showToolCalls) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
-                            },
-                        )
-                    }
-                    // v0.1.97: quick thinking visibility toggle — brain icon.
-                    IconButton(
-                        onClick = { scope.launch { settingsRepo.setShowThinking(!showThinking) } },
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Psychology,
-                            contentDescription = if (showThinking) "Hide thinking" else "Show thinking",
-                            tint = if (showThinking) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
-                            },
-                        )
-                    }
-                    // v0.5.9: delegated-children view for this session.
-                    IconButton(onClick = { showChildren = true }) {
-                        Icon(
-                            imageVector = Icons.Outlined.AccountTree,
-                            contentDescription = "Children",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                        )
-                    }
-                    if (!state.isStreaming && state.messages.any { it.role == "assistant" }) {
-                        IconButton(onClick = { viewModel.retry() }) {
-                            Icon(Icons.Default.Refresh, contentDescription = "Retry")
-                        }
-                    }
-                },
-            )
-        },
+        containerColor = Color(0xFF000022),
         bottomBar = {
             Surface(
-                shadowElevation = 8.dp,
-                color = MaterialTheme.colorScheme.surface,
+                shadowElevation = 0.dp,
+                color = Color(0xFF000022),
                 modifier = Modifier.navigationBarsPadding(),
             ) {
                 Column {
@@ -1050,7 +933,7 @@ fun ChatScreen(
                         }
                     }
                     // v0.8.0: subagents + tasks ride the same pinned pattern.
-                    if (runningChildren > 0) {
+                    if (showExtendedActivity && runningChildren > 0) {
                         PinnedActivityChip(
                             icon = Icons.Outlined.Groups,
                             text = "Running $runningChildren subagent${if (runningChildren == 1) "" else "s"}",
@@ -1058,7 +941,7 @@ fun ChatScreen(
                             onClick = { showChildren = true },
                         )
                     }
-                    if (state.todos.isNotEmpty() && openTodos > 0) {
+                    if (showExtendedActivity && state.todos.isNotEmpty() && openTodos > 0) {
                         PinnedActivityChip(
                             icon = Icons.Outlined.Checklist,
                             text = "Tasks ${state.todos.count { it.isDone }}/${state.todos.size}",
@@ -1316,149 +1199,57 @@ fun ChatScreen(
                             onAnswer = { answer -> viewModel.respondToClarify(answer) },
                         )
                     }
-                    // Composer — official-app silhouette (v0.8.3): round "+" outside
-                    // the pill on the left, one pill input, round send/stop on the
-                    // right. Our differentiators (context gauge, tok/s, YOLO) live in
-                    // a thin strip inside the pill so the silhouette still matches.
                     val canSend = (composerText.isNotBlank() || pendingImages.isNotEmpty()) && !isTranscribing
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.Bottom,
-                    ) {
-                        // "+" — attach menu (outside the pill, like the reference)
-                        Box(
-                            modifier = Modifier
-                                .size(46.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f))
-                                .border(
-                                    BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
-                                    CircleShape,
-                                )
-                                .clickable(enabled = !isRecording && !isTranscribing) {
-                                    showAttachSheet = true
-                                },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                Icons.Filled.Add,
-                                contentDescription = "Attach",
-                                tint = MaterialTheme.colorScheme.onSurface,
-                            )
-                        }
-                        Spacer(Modifier.width(10.dp))
-                        Surface(
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(26.dp),
-                            color = Color(0xFF1A1A1A),
-                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
-                        ) {
-                            Column {
-                                // Thin metrics strip — only when there's something
-                                // to show (streaming tok/s or a known context size).
-                                val showStrip = state.isStreaming ||
-                                    (state.contextMax != null && state.contextMax > 0)
-                                if (showStrip) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(start = 14.dp, end = 10.dp, top = 8.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                    ) {
-                                        ContextRing(
-                                            used = state.contextUsed,
-                                            max = state.contextMax,
-                                            modifier = Modifier.padding(end = 4.dp),
-                                            onClick = { showCtxPanel = true },
-                                        )
-                                        Text(
-                                            text = if (state.contextMax != null && state.contextMax > 0 && state.contextUsed != null)
-                                                "${formatTokens(state.contextUsed)} / ${formatTokens(state.contextMax)}"
-                                            else "",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                        )
-                                        if (state.isStreaming && displayTokPerSec > 0.0) {
-                                            Text(
-                                                text = "  ·  %.1f tok/s".format(displayTokPerSec),
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.9f),
-                                            )
-                                        }
-                                        Spacer(Modifier.weight(1f))
-                                        YoloButton(
-                                            enabled = state.yoloEnabled,
-                                            onClick = { viewModel.setYolo(!state.yoloEnabled) },
-                                        )
-                                    }
-                                }
-                                OutlinedTextField(
-                                    value = composerText,
-                                    onValueChange = { composerText = it },
-                                    placeholder = {
-                                        Text(
-                                            // Reference behavior: while a turn runs the
-                                            // pill invites a queued message; send queues it.
-                                            if (state.isStreaming) "Queue a message..." else "Message Hermes...",
-                                            fontStyle = FontStyle.Italic,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                        )
-                                    },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .focusRequester(focusRequester)
-                                        .onFocusChanged { composerFocused = it.isFocused },
-                                    maxLines = 4,
-                                    enabled = true,
-                                    shape = RoundedCornerShape(26.dp),
-                                    colors = OutlinedTextFieldDefaults.colors(
-                                        focusedBorderColor = Color.Transparent,
-                                        unfocusedBorderColor = Color.Transparent,
-                                        focusedContainerColor = Color.Transparent,
-                                        unfocusedContainerColor = Color.Transparent,
-                                    ),
-                                )
+                    val activeComposer = composerFocused || composerText.isNotEmpty() || pendingImages.isNotEmpty()
+                    val showStop = state.isStreaming && !canSend
+                    val attach: @Composable () -> Unit = {
+                        ChatCircle(Icons.Filled.Add, "Attach", Color(0xFF14224A)) { showAttachSheet = true }
+                    }
+                    val microphone: @Composable () -> Unit = {
+                        ChatCircle(Icons.Outlined.Mic, "Microphone", Color(0xFF1D2761)) {
+                            if (isRecording) stopRecording() else {
+                                val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                                if (granted) startRecording() else micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                             }
                         }
-                        Spacer(Modifier.width(10.dp))
-                        // Round send / stop. While streaming: stop square when the
-                        // composer is empty, up-arrow (queues) once there's text —
-                        // matches the "Queue a message..." placeholder promise.
-                        val showStop = state.isStreaming && !canSend
-                        Box(
-                            modifier = Modifier
-                                .size(46.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    if (showStop) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.85f)
-                                    else if (canSend) MaterialTheme.colorScheme.primary
-                                    else MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
-                                )
-                                .clickable(enabled = showStop || canSend) {
-                                    if (showStop) viewModel.stopStreaming()
-                                    else if (state.isStreaming) {
-                                        viewModel.queueMessage(composerText)
-                                        composerText = ""
-                                    } else sendComposer()
-                                },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            if (showStop) {
-                                Icon(
-                                    Icons.Filled.Stop,
-                                    contentDescription = "Stop",
-                                    tint = MaterialTheme.colorScheme.onErrorContainer,
-                                )
-                            } else {
-                                Icon(
-                                    Icons.Filled.ArrowUpward,
-                                    contentDescription = "Send",
-                                    tint = MaterialTheme.colorScheme.onPrimary,
-                                )
+                    }
+                    val sendOrStop: @Composable () -> Unit = {
+                        ChatCircle(if (showStop) Icons.Filled.Stop else Icons.Filled.ArrowUpward,
+                            if (showStop) "Stop" else "Send", Color(0xFF402B43)) {
+                            if (showStop) viewModel.stopStreaming()
+                            else if (state.isStreaming) { viewModel.queueMessage(composerText); composerText = "" }
+                            else sendComposer()
+                        }
+                    }
+                    BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)
+                        .height(if (activeComposer) 106.dp else 52.dp)
+                        .clip(RoundedCornerShape(if (activeComposer) 24.dp else 50.dp))
+                        .background(Color(0xFF0C1A3C)).border(1.dp, Color.White.copy(alpha = .07f), RoundedCornerShape(if (activeComposer) 24.dp else 50.dp))) {
+                        BasicTextField(value = composerText, onValueChange = { composerText = it },
+                            modifier = Modifier.align(if (activeComposer) Alignment.TopStart else Alignment.CenterStart)
+                                .fillMaxWidth().padding(start = if (activeComposer) 14.dp else 56.dp, end = if (activeComposer) 14.dp else 56.dp, top = if (activeComposer) 14.dp else 0.dp)
+                                .focusRequester(focusRequester).onFocusChanged { composerFocused = it.isFocused },
+                            textStyle = androidx.compose.ui.text.TextStyle(color = Color(0xFFF2F4FA), fontSize = 17.sp, fontFamily = ChatManrope),
+                            cursorBrush = SolidColor(Color(0xFF447CFF)), maxLines = 3,
+                            decorationBox = { inner -> Box {
+                                if (composerText.isEmpty()) Text(if (state.isStreaming) "Queue a message..." else "Message Hermes...", color = Color(0xFF676571), fontSize = 17.sp, fontFamily = ChatManrope)
+                                inner()
+                            } })
+                        Box(Modifier.align(if (activeComposer) Alignment.BottomStart else Alignment.CenterStart).padding(start = 6.dp, bottom = if (activeComposer) 6.dp else 0.dp)) { attach() }
+                        if (activeComposer) {
+                            Row(Modifier.align(Alignment.BottomStart).padding(start = 52.dp, bottom = 16.dp).clip(CircleShape).clickable { showModelPicker = true }.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Outlined.Psychology, null, tint = Color(0xFFA2A4B0), modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(5.dp))
+                                Text(state.currentModel?.let { shortModelName(it) } ?: "Model", color = Color(0xFFA2A4B0), fontSize = 13.sp, maxLines = 1, fontFamily = ChatManrope)
                             }
                         }
+                        val hasSend = canSend || showStop
+                        if (activeComposer || !hasSend) {
+                            Box(Modifier.align(if (activeComposer) Alignment.BottomEnd else Alignment.CenterEnd)
+                                .padding(end = if (activeComposer && hasSend) 50.dp else 6.dp, bottom = if (activeComposer) 6.dp else 0.dp)) { microphone() }
+                        }
+                        if (hasSend) Box(Modifier.align(if (activeComposer) Alignment.BottomEnd else Alignment.CenterEnd)
+                            .padding(end = 6.dp, bottom = if (activeComposer) 6.dp else 0.dp)) { sendOrStop() }
                     }
                 }
             }
@@ -1591,7 +1382,7 @@ fun ChatScreen(
                                     }
                                 }
                             }),
-                        contentPadding = PaddingValues(vertical = 8.dp),
+                        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 8.dp),
                     ) {
                         itemsIndexed(state.messages, key = { _, msg -> msg.id }) { index, msg ->
                             val sameSender = index > 0 && state.messages[index - 1].role == msg.role
@@ -1641,7 +1432,7 @@ fun ChatScreen(
                             // them). Rows respect the tool toggle; segments the
                             // thinking toggle.
                             if (msg.role == "assistant" &&
-                                showThinking && msg.priorThinking.isNotEmpty()
+                                showExtendedActivity && showThinking && msg.priorThinking.isNotEmpty()
                             ) {
                                 // Thinking segments stay on the timeline; the tool
                                 // calls collapse into the official turn-summary row.
@@ -1657,7 +1448,9 @@ fun ChatScreen(
                                 // made M tool calls" — green check done, blue
                                 // spinner while the turn streams; tap to expand.
                                 val turnExpanded = expandedTurns[msg.id] == true
-                                TurnSummaryRow(
+                                if (msg.toolCalls.size == 1) {
+                                    ToolCallList(toolCalls = msg.toolCalls)
+                                } else TurnSummaryRow(
                                     toolCalls = msg.toolCalls,
                                     streaming = msg.isStreaming,
                                     expanded = turnExpanded,
@@ -1672,12 +1465,13 @@ fun ChatScreen(
                             // collapsed THOUGHT after). It sits after the
                             // timeline above because any thinking that PRECEDED
                             // a tool call was anchored there as a segment.
-                            if (msg.role == "assistant" && msg.thinkingText?.isNotBlank() == true &&
+                            if (msg.role == "assistant" && showExtendedActivity && !msg.isStreaming && msg.thinkingText?.isNotBlank() == true &&
                                 showThinking
                             ) {
                                 ThoughtCard(text = msg.thinkingText, streaming = msg.isStreaming)
                             }
 
+                            if (msg.role == "assistant" && msg.isStreaming) LiveThinkingTicker("Thinking…")
                             // Skip the empty bubble for tool-only assistant rows
                             // from history (content blank, not streaming) — the
                             // thinking + tools boxes above already tell the story.
@@ -1701,20 +1495,9 @@ fun ChatScreen(
             // the streaming message item above (see displayTokPerSec above).
 
         }
-            // v0.8.3: floating status pill (official style) — pulsing dot,
-            // state word, elapsed timer, tok/s. Overlaid, never pushes the list.
-            val ts = turnStartMs
-            if (state.isStreaming && ts != null) {
-                TurnStatusPill(
-                    thinking = state.messages.lastOrNull { it.isStreaming }?.thinkingText.orEmpty(),
-                    tokPerSec = displayTokPerSec,
-                    startMs = ts,
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .statusBarsPadding()
-                        .padding(top = 6.dp),
-                )
-            }
+            ChatHeader(title = state.sessionTitle, onBack = onBack, onExecution = { showExtendedActivity = !showExtendedActivity },
+                modifier = Modifier.align(Alignment.TopCenter).offset(y = 6.dp))
+
         }
     }
 
@@ -1953,43 +1736,8 @@ fun ChatScreen(
 
 @Composable
 private fun LiveThinkingTicker(text: String) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.Start,
-    ) {
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            // v0.1.95: live thinking pill shares the themeable thinking-box color
-            color = LocalUiSurfaces.current.thinkingBox,
-            modifier = Modifier.widthIn(max = 340.dp),
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.Top,
-            ) {
-                // Spinning indicator
-                Text(
-                    text = "●",
-                    color = MaterialTheme.colorScheme.primary,
-                    fontSize = 10.sp,
-                    modifier = Modifier.padding(top = 2.dp),
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = text,
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        fontStyle = FontStyle.Italic,
-                        lineHeight = 18.sp,
-                    ),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                    maxLines = 6,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-    }
+    Text(text, color = Color.White, fontSize = 13.sp, fontFamily = ChatManrope,
+        modifier = Modifier.padding(vertical = 4.dp).clip(CircleShape).background(Color(0xFF8B5CF6)).padding(horizontal = 12.dp, vertical = 5.dp))
 }
 
 
@@ -2007,41 +1755,19 @@ private fun MessageBubble(
     val alignment = if (isUser) Alignment.End else Alignment.Start
     // v0.6.0: assistant messages render as PLAIN text on the background
     // (official-app style) — only user messages keep filled bubbles.
-    val bubbleColor = MaterialTheme.colorScheme.primaryContainer
-    val bubbleShape = RoundedCornerShape(
-        topStart = 18.dp,
-        topEnd = 4.dp,
-        bottomStart = 18.dp,
-        bottomEnd = 18.dp,
-    )
+    val bubbleColor = Color(0xFF1F3B7D)
+    val bubbleShape = RoundedCornerShape(if (isUser) 20.dp else 16.dp)
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(
-                // v0.1.87: assistant bubbles are full-bleed (edge to edge) —
-                // only user bubbles keep side insets.
-                start = if (isUser) 8.dp else 0.dp,
-                end = if (isUser) 8.dp else 0.dp,
-                top = if (sameSender) 1.dp else 6.dp,
-                bottom = 0.dp,
-            ),
+            .padding(top = 5.dp, bottom = 5.dp),
         horizontalAlignment = alignment,
     ) {
-        // Timestamp centered above first message of a group
-        if (!sameSender) {
-            Text(
-                text = formatTimestamp(message.timestamp),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
-            )
-        }
-
         // Assistant bubbles span the full width (edge to edge); user bubbles
         // stay capped at a chat-style max width, aligned right.
         val bubbleWidthModifier = if (isUser) {
-            Modifier.widthIn(min = 60.dp, max = 320.dp)
+            Modifier.widthIn(max = 288.dp)
         } else {
             Modifier.fillMaxWidth()
         }
@@ -2049,25 +1775,10 @@ private fun MessageBubble(
         Box {
             Column(
                 modifier = bubbleWidthModifier
-                    .then(
-                        if (isUser) {
-                            Modifier
-                                .clip(bubbleShape)
-                                .background(bubbleColor)
-                                // Border in the context-gauge color (primary) —
-                                // subtle outline around user bubbles (v0.1.67).
-                                .border(
-                                    width = 1.dp,
-                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.28f),
-                                    shape = bubbleShape,
-                                )
-                                .padding(horizontal = 12.dp, vertical = 8.dp)
-                        } else {
-                            // v0.6.0: assistant text sits directly on the chat
-                            // background — no surface, no border.
-                            Modifier.padding(horizontal = 14.dp, vertical = 4.dp)
-                        }
-                    ),
+                    .clip(bubbleShape)
+                    .background(if (isUser) bubbleColor else Color(0xFF272740))
+                    .clickable(onClick = onReply)
+                    .padding(horizontal = if (isUser) 14.dp else 16.dp, vertical = if (isUser) 10.dp else 12.dp),
             ) {
             // Thinking no longer renders in the message (v0.1.65): it streams
             // in the docked Live Activity panel while working — showing it here
@@ -2114,7 +1825,7 @@ private fun MessageBubble(
                             h4 = MaterialTheme.typography.bodyLarge,
                             h5 = MaterialTheme.typography.bodyMedium,
                             h6 = MaterialTheme.typography.bodyMedium,
-                            text = MaterialTheme.typography.bodyMedium,
+                            text = MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 25.sp, fontFamily = ChatManrope, fontWeight = FontWeight.Normal, color = Color(0xFFF2F4FA)),
                         ),
                         // v0.5.7: math pipeline v2 (see MathRendering). The parser natively
                         // makes math tokens the library silently drops — the annotator emits
@@ -2173,55 +1884,8 @@ private fun MessageBubble(
                 )
             }
 
-            // Usage footer + inline timestamp
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                message.usage?.let { usage ->
-                    // v0.1.102: exact turn-average speed — real token count
-                    // (Ollama eval stats for local models included) over the
-                    // stream duration (message.timestamp = placeholder creation).
-                    // Frozen via remember so it doesn't drift on recomposition.
-                    val avgTokPerSec = remember(usage.totalTokens, message.timestamp) {
-                        val secs = ((System.currentTimeMillis() - message.timestamp) / 1000f)
-                            .coerceAtLeast(1f)
-                        usage.totalTokens / secs
-                    }
-                    Text(
-                        text = buildString {
-                            append("${usage.totalTokens} tokens")
-                            append(" · ≈${String.format("%.1f", avgTokPerSec)} tok/s")
-                            usage.estimatedCostUsd?.let { append(" · \$${String.format("%.4f", it)}") }
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                    )
-                    Spacer(Modifier.width(6.dp))
-                }
-                Text(
-                    text = formatTime(message.timestamp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                )
             }
-            }
-            // "⋯" message actions — long-press is reserved for text selection,
-            // so Reply/Copy lives behind this small button (v0.1.94).
-            IconButton(
-                onClick = onReply,
-                modifier = Modifier
-                    .align(if (isUser) Alignment.TopStart else Alignment.TopEnd)
-                    .size(28.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.MoreVert,
-                    contentDescription = "Message actions",
-                    modifier = Modifier.size(16.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                )
-            }
+
         }
     }
 }
@@ -2407,8 +2071,9 @@ private fun TurnSummaryRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 3.dp)
-            .clip(RoundedCornerShape(10.dp))
+            .padding(vertical = 3.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color(0xFF1D5945))
             .clickable(onClick = onToggle)
             .padding(horizontal = 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -2424,7 +2089,7 @@ private fun TurnSummaryRow(
                 imageVector = Icons.Default.CheckCircle,
                 contentDescription = "Done",
                 modifier = Modifier.size(15.dp),
-                tint = Color(0xFF43A047),
+                tint = Color(0xFF30D158),
             )
         }
         Spacer(Modifier.width(9.dp))
@@ -2509,10 +2174,9 @@ private fun ToolCallRow(toolCall: UiToolCall, now: Long, onTap: () -> Unit) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp)
             .clip(RoundedCornerShape(16.dp))
             .clickable(onClick = onTap),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+        color = Color(0xFF1D5945),
         shape = RoundedCornerShape(16.dp),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
     ) {
@@ -2526,14 +2190,14 @@ private fun ToolCallRow(toolCall: UiToolCall, now: Long, onTap: () -> Unit) {
                 modifier = Modifier
                     .size(22.dp)
                     .clip(RoundedCornerShape(6.dp))
-                    .background(badgeColor),
+                    .background(Color.Transparent),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
                     imageVector = toolBadgeIcon(toolCall.toolName),
                     contentDescription = null,
                     modifier = Modifier.size(13.dp),
-                    tint = Color.White,
+                    tint = Color(0xFF30D158),
                 )
             }
             Spacer(Modifier.width(9.dp))
@@ -2541,7 +2205,7 @@ private fun ToolCallRow(toolCall: UiToolCall, now: Long, onTap: () -> Unit) {
                 text = toolVerb(toolCall.toolName),
                 style = MaterialTheme.typography.bodySmall,
                 fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
+                color = Color(0xFF30D158),
             )
             if (!argsPreview.isNullOrBlank()) {
                 Spacer(Modifier.width(8.dp))
@@ -2561,24 +2225,7 @@ private fun ToolCallRow(toolCall: UiToolCall, now: Long, onTap: () -> Unit) {
             }
             Spacer(Modifier.width(6.dp))
             if (running) {
-                Text(
-                    text = formatElapsed(toolCall.startedAt, now, false),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                )
-                Spacer(Modifier.width(6.dp))
-                CircularProgressIndicator(
-                    modifier = Modifier.size(12.dp),
-                    strokeWidth = 2.dp,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            } else {
-                Icon(
-                    imageVector = Icons.Default.CheckCircle,
-                    contentDescription = "Completed",
-                    modifier = Modifier.size(14.dp),
-                    tint = Color(0xFF43A047),
-                )
+                CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 2.dp, color = Color(0xFF447CFF))
             }
         }
     }
@@ -4056,6 +3703,41 @@ private fun InlineClarifyCard(
                     enabled = customAnswer.isNotBlank(),
                 ) {
                     Text("Send")
+                }
+            }
+        }
+    }
+}
+
+
+@Composable
+private fun ChatCircle(icon: ImageVector, description: String, color: Color, onClick: () -> Unit) {
+    Box(Modifier.size(if (description == "Back" || description == "More") 48.dp else 40.dp).clip(CircleShape).background(color).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
+        Icon(icon, description, tint = Color(0xFFF2F4FA), modifier = Modifier.size(22.dp))
+    }
+}
+
+@Composable
+private fun ChatHeader(title: String, onBack: () -> Unit, onExecution: () -> Unit, modifier: Modifier = Modifier) {
+    var expanded by remember { mutableStateOf(false) }
+    Box(modifier.fillMaxWidth().padding(horizontal = 14.dp)) {
+        ChatCircle(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Back", Color(0xFF0C1A3C), onBack)
+        Column(Modifier.align(Alignment.TopCenter), horizontalAlignment = Alignment.CenterHorizontally) {
+            BlobAvatar(recipeFor("hermes"), size = 44.dp)
+            Text(title.ifBlank { "Hermes" }, modifier = Modifier.widthIn(max = 230.dp).clip(CircleShape).background(Color(0xFF0C1A3C)).padding(horizontal = 12.dp, vertical = 4.dp),
+                color = Color(0xFFF2F4FA), fontFamily = ChatManrope, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Box(Modifier.align(Alignment.TopEnd)) {
+            ChatCircle(Icons.Filled.MoreHoriz, "More", Color(0xFF0C1A3C)) { expanded = true }
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, modifier = Modifier.width(240.dp).clip(RoundedCornerShape(20.dp)).background(Color(0xFF0C1A3C))) {
+                val items = listOf("Live Mode" to Icons.Outlined.GraphicEq, "Terminal" to Icons.Outlined.Terminal,
+                    "Execution" to Icons.Outlined.Terminal, "Routines" to Icons.Outlined.Schedule,
+                    "Artifacts" to Icons.Outlined.Inventory2, "Archive" to Icons.Outlined.Archive, "Delete" to Icons.Outlined.Delete)
+                items.forEachIndexed { index, (label, icon) ->
+                    if (index == 5) HorizontalDivider(color = Color.White.copy(alpha = .10f), modifier = Modifier.padding(horizontal = 16.dp))
+                    DropdownMenuItem(text = { Text(label, fontSize = 17.sp, fontFamily = ChatManrope, color = if (label == "Delete") Color(0xFFFF6B6B) else Color(0xFFF2F4FA)) },
+                        leadingIcon = { Icon(icon, null, tint = if (label == "Delete") Color(0xFFFF6B6B) else Color(0xFFF2F4FA), modifier = Modifier.size(20.dp)) },
+                        onClick = { expanded = false; if (label == "Execution") onExecution() }, contentPadding = PaddingValues(horizontal = 16.dp), modifier = Modifier.height(42.dp))
                 }
             }
         }
