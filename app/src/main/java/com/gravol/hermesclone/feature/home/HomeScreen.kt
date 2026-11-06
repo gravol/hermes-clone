@@ -71,6 +71,7 @@ import com.gravol.hermesclone.R
 import com.gravol.hermesclone.core.network.SessionSummary
 import com.gravol.hermesclone.feature.sessions.SessionsViewModel
 import com.gravol.hermesclone.ui.orb.BlobAvatar
+import com.gravol.hermesclone.ui.orb.FurBlob
 import com.gravol.hermesclone.ui.orb.recipeFor
 import com.gravol.hermesclone.ui.theme.*
 import java.text.DateFormat
@@ -650,7 +651,7 @@ private fun NoMatchingAgents(searching: Boolean) {
         modifier = Modifier.fillMaxWidth().padding(top = 120.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        FurBlobPlaceholder(Modifier.size(96.dp))
+        FurBlob(size = 110.dp, seed = 7)
         Spacer(Modifier.height(22.dp))
         Text(if (searching) "No matching agents" else "No agents yet",
             color = HermesTextPrimary, fontSize = 22.sp)
@@ -661,24 +662,6 @@ private fun NoMatchingAgents(searching: Boolean) {
     }
 }
 
-/** Placeholder for the character-fur mascot until the AGSL fur renderer lands. */
-@Composable
-private fun FurBlobPlaceholder(modifier: Modifier = Modifier) {
-    Canvas(modifier) {
-        val w = size.width; val h = size.height
-        val path = androidx.compose.ui.graphics.Path().apply {
-            moveTo(w * 0.22f, h * 0.55f)
-            cubicTo(w * 0.10f, h * 0.20f, w * 0.35f, h * 0.05f, w * 0.55f, h * 0.10f)
-            cubicTo(w * 0.85f, h * 0.12f, w * 0.95f, h * 0.45f, w * 0.82f, h * 0.72f)
-            cubicTo(w * 0.72f, h * 0.95f, w * 0.30f, h * 0.95f, w * 0.22f, h * 0.55f)
-            close()
-        }
-        drawPath(path, Color(0xFF8FC4EE))
-        val eye = Color(0xFF182A4A)
-        drawOval(eye, Offset(w * 0.42f, h * 0.42f), androidx.compose.ui.geometry.Size(w * 0.09f, h * 0.13f))
-        drawOval(eye, Offset(w * 0.62f, h * 0.42f), androidx.compose.ui.geometry.Size(w * 0.09f, h * 0.13f))
-    }
-}
 
 // ─── bottom bar pieces ───
 

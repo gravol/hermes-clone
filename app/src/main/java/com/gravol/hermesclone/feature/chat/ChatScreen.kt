@@ -69,6 +69,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
@@ -1496,7 +1497,7 @@ fun ChatScreen(
             // the streaming message item above (see displayTokPerSec above).
 
         }
-            ChatHeader(title = state.sessionTitle, bot = botName, onBack = onBack, onExecution = { showExtendedActivity = !showExtendedActivity },
+            ChatHeader(title = state.sessionTitle, bot = botName, thinking = state.isStreaming, onBack = onBack, onExecution = { showExtendedActivity = !showExtendedActivity },
                 modifier = Modifier.align(Alignment.TopCenter).offset(y = 6.dp))
 
         }
@@ -3732,6 +3733,19 @@ private fun InlineClarifyCard(
 
 
 @Composable
+private fun ThinkingTimerPill() {
+    var elapsed by remember { mutableIntStateOf(0) }
+    LaunchedEffect(Unit) { while (true) { delay(1000); elapsed++ } }
+    Row(Modifier.padding(top = 4.dp).clip(CircleShape).background(Color(0xFF0C1A3C)).padding(horizontal = 10.dp, vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Filled.Psychology, null, tint = Color(0xFFB9BDD0), modifier = Modifier.size(13.dp))
+        Spacer(Modifier.width(5.dp))
+        Text("Thinking… %d:%02d".format(elapsed / 60, elapsed % 60),
+            color = Color(0xFFB9BDD0), fontSize = 13.sp, fontFamily = ChatManrope)
+    }
+}
+
+@Composable
 private fun ChatCircle(icon: ImageVector, description: String, color: Color, onClick: () -> Unit) {
     Box(Modifier.size(if (description == "Back" || description == "More") 48.dp else 40.dp).clip(CircleShape).background(color).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
         Icon(icon, description, tint = Color(0xFFF2F4FA), modifier = Modifier.size(22.dp))
@@ -3739,7 +3753,7 @@ private fun ChatCircle(icon: ImageVector, description: String, color: Color, onC
 }
 
 @Composable
-private fun ChatHeader(title: String, bot: String, onBack: () -> Unit, onExecution: () -> Unit, modifier: Modifier = Modifier) {
+private fun ChatHeader(title: String, bot: String, onBack: () -> Unit, onExecution: () -> Unit, thinking: Boolean, modifier: Modifier = Modifier) {
     var expanded by remember { mutableStateOf(false) }
     Box(modifier.fillMaxWidth().padding(horizontal = 14.dp)) {
         ChatCircle(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Back", Color(0xFF0C1A3C), onBack)
@@ -3747,6 +3761,7 @@ private fun ChatHeader(title: String, bot: String, onBack: () -> Unit, onExecuti
             BlobAvatar(recipeFor(if (bot == "default") "hermes" else bot.lowercase()), size = 44.dp)
             Text(if (bot == "default") "Hermes" else bot, modifier = Modifier.widthIn(max = 230.dp).clip(CircleShape).background(Color(0xFF0C1A3C)).padding(horizontal = 12.dp, vertical = 4.dp),
                 color = Color(0xFFF2F4FA), fontFamily = ChatManrope, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (thinking) ThinkingTimerPill()
         }
         Box(Modifier.align(Alignment.TopEnd)) {
             ChatCircle(Icons.Filled.MoreHoriz, "More", Color(0xFF0C1A3C)) { expanded = true }
