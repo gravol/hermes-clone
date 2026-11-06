@@ -1,0 +1,429 @@
+// Generated from iOS NovaAuroraShader.metal by export-android-orb-shaders.py.
+// Constant loop bounds with detail-controlled break, explicit Metal macro expansion.
+uniform float2 resolution;
+uniform float time;
+uniform float detail;
+uniform float liveScale;
+uniform float liveTurbulence;
+uniform float liveBrightness;
+uniform float liveSaturation;
+uniform float liveVoice;
+uniform float livePitch;
+uniform float liveGlow;
+uniform float paper;
+layout(color) uniform half4 surfaceColor;
+layout(color) uniform half4 coreColor;
+layout(color) uniform half4 haloColor;
+float3 nv_tanh(float3 value) { float3 e = exp(-2.0 * value); return (1.0-e)/(1.0+e); }
+
+// The orb family of loading patterns: one ray-marched sphere of light, drawn
+// five ways. Every entry point takes the same arguments — three colours the
+// caller derives from the accent — and returns a premultiplied colour whose
+// alpha is its own luminance, so the orb sits on any canvas.
+//
+//   novaAurora  — a boiling iris of colour with a bright core (the original)
+//   orbTide     — glassy latitude bands flowing round a still sphere
+//   orbEmber    — flames licking upward off a hot core
+//   orbPulsar   — a calm shell crossed by two spinning rings of light
+//   orbQuasar   — a dense core bristling with sweeping spikes
+
+float2x2 nv_rot(float a) { float c = cos(a), s = sin(a); return float2x2(c, -s, s, c); }
+
+float3 nv_grad3(float t, float3 a, float3 b, float3 c) {
+    float seg = fract(t) * 3.0;
+    if (seg < 1.0) return mix(a, b, smoothstep(0.0, 1.0, seg));
+    if (seg < 2.0) return mix(b, c, smoothstep(0.0, 1.0, seg - 1.0));
+    return mix(c, a, smoothstep(0.0, 1.0, seg - 2.0));
+}
+
+float nv_hash(float2 p) {
+    float3 p3 = fract(float3(p.x, p.y, p.x) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+float3 nv_dither(float3 col, float2 frag) {
+    float n = nv_hash(frag) + nv_hash(frag + 19.19) - 1.0;
+    float gate = smoothstep(0.0, 2.0 / 255.0, max(col.r, max(col.g, col.b)));
+    return col + n * (1.0 / 255.0) * gate;
+}
+
+float3 nvb_aurora(float3 a, float t) {
+    for (int k = 1; k < 7; k++)
+    { float d = float(k); a -= cos(a.yzx * d + t * 0.9 + d * 0.4) / (d + 0.5); }
+    return a;
+}
+
+struct nv_view {
+    float3 dir;   // unrotated ray, for the corona
+    float3 rdir;  // rotated ray
+    float3 roff;  // rotated origin
+};
+
+// The camera every orb shares: a ray through the pixel, tumbled slowly so
+// the sphere appears to turn.
+nv_view nv_camera(float2 cc, float2 R, float t, float tumble) {
+    nv_view v;
+    v.dir = normalize(float3(cc, R.y * 1.28));
+    float2x2 m1 = nv_rot(0.13 * t * tumble), m2 = nv_rot(-0.09 * t * tumble + 0.5);
+    v.rdir = v.dir;                    v.rdir.xz = m1 * v.rdir.xz; v.rdir.yz = m2 * v.rdir.yz;
+    v.roff = float3(0.0, 0.0, -13.0);  v.roff.xz = m1 * v.roff.xz; v.roff.yz = m2 * v.roff.yz;
+    return v;
+}
+
+// The voice on the sphere, 0…1 for a direction. Three lattices of sine
+// waves laid over each other — broad swells, mid lobes, fine needles — with
+// the pitch shifting the weight from the broad to the fine, so a low voice
+// heaves and a high one bristles. Every lattice point of either sign is a
+// lobe, which makes the field dense across the whole surface, and the
+// lattices drift at different rates so the lobes travel and merge rather
+// than march in step. Built from the normal's coordinates rather than a
+// longitude, so there is no seam anywhere.
+//
+// How far, in scene units, a full lobe pushes the shell out. Kept small:
+// the silhouette's waves are drawn by `nv_rays`; these lobes only stir the
+// shell's surface so the face of the sphere moves with the voice too.
+const float nv_voiceReach = 0.8;
+
+float nv_voice_field(float3 n, float t, float pitch) {
+    // Coarse lattices: fewer lobes round the sphere, each broad at its base.
+    float3 w1 = n * 2.2 + float3(0.5 * t, -0.4 * t, 0.3 * t);
+    float3 w2 = n * 4.4 + float3(-0.6 * t, 0.45 * t, 0.55 * t);
+    float3 w3 = n * 8.0 + float3(0.8 * t, 0.7 * t, -0.5 * t);
+    float broad = abs(sin(w1.x) * sin(w1.y) * sin(w1.z)) * (0.4 + 0.6 * (1.0 - pitch));
+    float mid = abs(sin(w2.x) * sin(w2.y) * sin(w2.z)) * 0.85;
+    float fine = abs(sin(w3.x) * sin(w3.y) * sin(w3.z)) * (0.3 + 0.7 * pitch);
+    return pow(max(max(broad, mid), fine), mix(1.8, 3.0, pitch));
+}
+
+// The lobe under a point of the shell: how far, 0…1, the voice pushes the
+// surface out there.
+float nv_voice(float3 p, float r, float t, float voice, float pitch) {
+    if (voice < 0.003) return 0.0;
+    return voice * nv_voice_field(p / max(r, 1e-3), t, pitch);
+}
+
+// Lobe tips run to the halo colour so they read as light leaving the sphere
+// rather than as its surface.
+float3 nv_voice_tint(float3 col, float3 haloCol, float lobe) {
+    return mix(col, haloCol, clamp(lobe, 0.0, 1.0));
+}
+
+// And they shine: the lobes are brighter than the shell they leave, so they
+// read across the face of the sphere as well as at its rim.
+float3 nv_voice_glow(float lobe, float3 haloCol) {
+    return 1.2 * lobe * lobe * mix(haloCol, float3(1.0), 0.15);
+}
+
+// The soft glow round every orb. Live mode widens it with `glow` — the
+// pitch of the voice, while there is one — and, so a wide halo does not
+// wash the sphere out to white, dims it a little and keeps its colour to
+// the surface tone rather than the near-white core.
+float3 nv_corona(float3 dir, float radius, float t, float detail, float3 surfCol, float3 coreCol, float3 haloCol) {
+    float3 corona = float3(0.0);
+    float hueDrift = 0.08 * t;
+    for (int k = 0; k < 36; k++) {
+        if (float(k) >= 36.0 * detail) break;
+        float j = float(k + 1);
+        float3 p = (0.5 * j / detail) * dir;
+        p.z -= 13.0;
+        float rr = abs(length(p) - radius);
+        float g = 0.06 / (0.25 + rr * rr);
+        corona += nv_grad3(0.05 * j / detail + hueDrift + 0.3, surfCol, coreCol, haloCol) * g;
+    }
+    return corona * 900.0 / detail;
+}
+
+// MARK: - Nova
+
+float3 nvAurora(float2 cc, float2 R, float t, float turb, float detail, float voice, float pitch, float glow, float3 rays, float3 surfCol, float3 coreCol, float3 haloCol) {
+    nv_view v = nv_camera(cc, R, t, 1.0);
+    float3 col = float3(0.0);
+    float z = 0.0, d = 0.0, s = 0.0, rPrev = 1e9;
+    float radius = 2.5;
+    float hueDrift = 0.08 * t;
+    for (int k = 0; k < 72; k++) {
+        if (float(k) >= 72.0 * detail) break;
+        float3 p = z * v.rdir + v.roff;
+        float r = length(p);
+        if (r > 6.0 && r > rPrev) break;
+        rPrev = r;
+        float lobe = nv_voice(p, r, t, voice, pitch);
+        float dr = abs(r - radius);
+        float3 q = (dr < 4.0) ? nvb_aurora(p * 0.6, t) * (1.0 - smoothstep(2.5, 4.0, dr)) : float3(0.0);
+        s = q.y;
+        float boil = 0.50 * (0.5 * q.x + 0.4 * sin(s) + 0.3 * q.z) * turb;
+        float shell = abs(r - radius - boil - nv_voiceReach * lobe);
+        d = 0.085 * shell + 0.05 * abs(cos(s)) + 0.012;
+        z += d / detail;
+        float core = 0.55 / (0.9 * r * r + 0.20);
+        float ph = 0.16 * z + 0.22 * r + 0.18 * s + hueDrift;
+        float3 iris = nv_voice_tint(nv_grad3(ph, surfCol, coreCol, haloCol), haloCol, lobe);
+        float band = 0.5 * cos(s + 0.5 * r - 0.4 * t) + 0.7;
+        col += (iris * band + core * coreCol * 1.6 + nv_voice_glow(lobe, haloCol)) / d;
+        if (min(col.x, min(col.y, col.z)) > 9.1e3) break;
+    }
+    col += nv_corona(v.dir, radius + 0.3 * voice + 1.5 * glow, t, detail, surfCol, mix(coreCol, surfCol, 0.6 * glow), haloCol) * (1.0 - 0.25 * glow);
+    // Fewer, longer steps gather proportionally less light; scale back up.
+    // The voice's spikes go in with the rest of the light, so rim and spike
+    // are toned together and meet without a seam.
+    return nv_tanh(col / (2.6e3 * detail) + rays);
+}
+
+// MARK: - Tide
+
+// Latitude bands slide round a sphere that itself barely deforms: the motion
+// is in the colour, not the silhouette, so it reads as liquid under glass.
+float3 nvTide(float2 cc, float2 R, float t, float turb, float detail, float voice, float pitch, float glow, float3 rays, float3 surfCol, float3 coreCol, float3 haloCol) {
+    nv_view v = nv_camera(cc, R, t, 0.45);
+    float3 col = float3(0.0);
+    float z = 0.0, d = 0.0, rPrev = 1e9;
+    float radius = 2.5;
+    for (int k = 0; k < 72; k++) {
+        if (float(k) >= 72.0 * detail) break;
+        float3 p = z * v.rdir + v.roff;
+        float r = length(p);
+        if (r > 6.0 && r > rPrev) break;
+        rPrev = r;
+        float lobe = nv_voice(p, r, t, voice, pitch);
+        float lat = p.y / max(r, 1e-3);
+        float lon = atan(p.z, p.x);
+        float wave = sin(3.0 * p.y + 1.4 * t + 0.8 * sin(lon * 2.0 + 0.6 * t))
+                   + 0.5 * sin(7.0 * p.y - 2.2 * t + lon);
+        float swell = 0.22 * turb * wave;
+        float shell = abs(r - radius - swell - nv_voiceReach * lobe);
+        d = 0.085 * shell + 0.02 * abs(wave) + 0.012;
+        z += d / detail;
+        float core = 0.45 / (0.9 * r * r + 0.25);
+        float ph = 0.35 * lat + 0.12 * lon + 0.05 * t + 0.1 * wave;
+        float3 iris = nv_voice_tint(nv_grad3(ph, surfCol, coreCol, haloCol), haloCol, lobe);
+        float band = 0.5 * cos(5.0 * p.y - 1.8 * t + lon) + 0.75;
+        col += (iris * band + core * coreCol * 1.4 + nv_voice_glow(lobe, haloCol)) / d;
+        if (min(col.x, min(col.y, col.z)) > 9.1e3) break;
+    }
+    col += nv_corona(v.dir, radius + 0.3 * voice + 1.5 * glow, t, detail, surfCol, mix(coreCol, surfCol, 0.6 * glow), haloCol) * (1.0 - 0.25 * glow);
+    // Fewer, longer steps gather proportionally less light; scale back up.
+    // The voice's spikes go in with the rest of the light, so rim and spike
+    // are toned together and meet without a seam.
+    return nv_tanh(col / (2.6e3 * detail) + rays);
+}
+
+// MARK: - Ember
+
+// The noise drifts upward and the boil is allowed further off the shell near
+// the top, so the surface licks like flame; colour runs hot at the bottom and
+// cools toward the crown.
+float3 nvEmber(float2 cc, float2 R, float t, float turb, float detail, float voice, float pitch, float glow, float3 rays, float3 surfCol, float3 coreCol, float3 haloCol) {
+    nv_view v = nv_camera(cc, R, t, 0.3);
+    float3 col = float3(0.0);
+    float z = 0.0, d = 0.0, s = 0.0, rPrev = 1e9;
+    float radius = 2.4;
+    for (int k = 0; k < 72; k++) {
+        if (float(k) >= 72.0 * detail) break;
+        float3 p = z * v.rdir + v.roff;
+        float r = length(p);
+        if (r > 6.5 && r > rPrev) break;
+        rPrev = r;
+        float lobe = nv_voice(p, r, t, voice, pitch);
+        float dr = abs(r - radius);
+        float3 q = (dr < 4.0)
+            ? nvb_aurora(p * 0.7 + float3(0.0, -1.3 * t, 0.0), t * 0.6) * (1.0 - smoothstep(2.5, 4.0, dr))
+            : float3(0.0);
+        s = q.y;
+        float up = clamp(p.y / max(r, 1e-3), -1.0, 1.0);
+        // Flames: the shell is only allowed to boil outward, and further so
+        // toward the crown, so tongues rise off the top and the base stays dense.
+        float lick = 0.6 + 1.6 * max(up, 0.0);
+        float boil = 0.7 * turb * lick * max(0.6 * q.x + 0.4 * q.z, -0.15);
+        float shell = abs(r - radius - boil - nv_voiceReach * lobe);
+        d = 0.08 * shell + 0.045 * abs(cos(s)) + 0.012;
+        z += d / detail;
+        float core = 0.9 / (0.8 * r * r + 0.2);
+        float heat = 0.5 - 0.5 * up;
+        // Hot core colour at the base, through the surface, to halo at the crown.
+        float ph = 0.34 + 0.4 * heat + 0.08 * s + 0.02 * t;
+        float3 iris = nv_voice_tint(nv_grad3(ph, surfCol, coreCol, haloCol), haloCol, lobe);
+        float band = 0.5 * cos(s * 2.0 - 2.0 * t + 0.4 * r) + 0.7;
+        col += (iris * band * (0.5 + 1.0 * heat) + core * coreCol * 2.2 + nv_voice_glow(lobe, haloCol)) / d;
+        if (min(col.x, min(col.y, col.z)) > 9.1e3) break;
+    }
+    col += nv_corona(v.dir, radius + 0.3 * voice + 1.5 * glow, t, detail, surfCol, mix(coreCol, surfCol, 0.6 * glow), haloCol) * (1.0 - 0.25 * glow);
+    // Fewer, longer steps gather proportionally less light; scale back up.
+    // The voice's spikes go in with the rest of the light, so rim and spike
+    // are toned together and meet without a seam.
+    return nv_tanh(col / (2.6e3 * detail) + rays);
+}
+
+// MARK: - Pulsar
+
+// A nearly still shell, crossed by two rings of light on tilted, counter-
+// rotating axes — the calm one of the family.
+float3 nvPulsar(float2 cc, float2 R, float t, float turb, float detail, float voice, float pitch, float glow, float3 rays, float3 surfCol, float3 coreCol, float3 haloCol) {
+    nv_view v = nv_camera(cc, R, t, 0.5);
+    float3 col = float3(0.0);
+    float z = 0.0, d = 0.0, rPrev = 1e9;
+    float radius = 2.5;
+    float3 axisA = normalize(float3(sin(0.7 * t), 0.75, cos(0.7 * t)));
+    float3 axisB = normalize(float3(cos(0.5 * t + 1.0), -0.35, sin(0.5 * t + 1.0)));
+    for (int k = 0; k < 72; k++) {
+        if (float(k) >= 72.0 * detail) break;
+        float3 p = z * v.rdir + v.roff;
+        float r = length(p);
+        if (r > 6.0 && r > rPrev) break;
+        rPrev = r;
+        float lobe = nv_voice(p, r, t, voice, pitch);
+        float dr = abs(r - radius);
+        float3 q = (dr < 3.0) ? nvb_aurora(p * 0.5, t * 0.5) * (1.0 - smoothstep(1.5, 3.0, dr)) : float3(0.0);
+        float boil = 0.12 * turb * q.x;
+        float shell = abs(r - radius - boil - nv_voiceReach * lobe);
+        d = 0.09 * shell + 0.03 * abs(cos(q.y)) + 0.014;
+        z += d / detail;
+        float ringA = abs(dot(p, axisA)) + dr;
+        float ringB = abs(dot(p, axisB)) + dr;
+        float rings = 0.03 / (0.02 + ringA * ringA) + 0.03 / (0.02 + ringB * ringB);
+        float core = 0.5 / (0.9 * r * r + 0.25);
+        float ph = 0.12 * r + 0.08 * q.y + 0.06 * t;
+        float3 iris = nv_voice_tint(nv_grad3(ph, surfCol, coreCol, haloCol), haloCol, lobe);
+        float spokes = 0.5 * cos(6.0 * atan(p.z, p.x) + 2.5 * t) + 0.6;
+        col += (iris * spokes * 0.6 + rings * mix(haloCol, coreCol, 0.35) * 4.0 + core * coreCol * 1.5 + nv_voice_glow(lobe, haloCol)) / d;
+        if (min(col.x, min(col.y, col.z)) > 9.1e3) break;
+    }
+    col += nv_corona(v.dir, radius + 0.3 * voice + 1.5 * glow, t, detail, surfCol, mix(coreCol, surfCol, 0.6 * glow), haloCol) * (1.0 - 0.25 * glow);
+    // Fewer, longer steps gather proportionally less light; scale back up.
+    // The voice's spikes go in with the rest of the light, so rim and spike
+    // are toned together and meet without a seam.
+    return nv_tanh(col / (2.6e3 * detail) + rays);
+}
+
+// MARK: - Quasar
+
+// A smaller, denser core bristling with sharp spikes that sweep round the
+// sphere — the shell is pushed out along narrow lobes of a spherical wave,
+// raised to a high power so the lobes are needles rather than bumps.
+float3 nvQuasar(float2 cc, float2 R, float t, float turb, float detail, float voice, float pitch, float glow, float3 rays, float3 surfCol, float3 coreCol, float3 haloCol) {
+    nv_view v = nv_camera(cc, R, t, 0.8);
+    float3 col = float3(0.0);
+    float z = 0.0, d = 0.0, rPrev = 1e9;
+    float radius = 2.0;
+    for (int k = 0; k < 72; k++) {
+        if (float(k) >= 72.0 * detail) break;
+        float3 p = z * v.rdir + v.roff;
+        float r = length(p);
+        if (r > 6.5 && r > rPrev) break;
+        rPrev = r;
+        float lobe = nv_voice(p, r, t, voice, pitch);
+        float3 n = p / max(r, 1e-3);
+        float lon = atan(n.z, n.x);
+        float lat = asin(clamp(n.y, -1.0, 1.0));
+        float wave = sin(7.0 * lon + 2.0 * t) * sin(5.0 * lat + 3.0 * lon - 1.3 * t);
+        float spike = pow(max(0.5 + 0.5 * wave, 0.0), 10.0);
+        float3 q = (abs(r - radius) < 3.5) ? nvb_aurora(p * 0.5, t * 0.5) : float3(0.0);
+        float reach = 2.2 * turb * spike + 0.12 * q.x;
+        float shell = abs(r - radius - reach - nv_voiceReach * lobe);
+        d = 0.075 * shell + 0.03 * abs(cos(q.y)) + 0.012;
+        z += d / detail;
+        float core = 1.1 / (0.8 * r * r + 0.2);
+        float ph = 0.15 * r + 0.1 * q.y + 0.05 * t;
+        float3 iris = nv_voice_tint(nv_grad3(ph, surfCol, coreCol, haloCol), haloCol, lobe);
+        // Spike tips run to the halo colour so the needles read as light
+        // leaving the sphere rather than as its surface.
+        float3 tip = mix(iris, haloCol, clamp(spike * 1.5, 0.0, 1.0));
+        float band = 0.5 * cos(4.0 * lon - 3.0 * t) + 0.8;
+        col += (tip * band + core * coreCol * 2.0 + nv_voice_glow(lobe, haloCol)) / d;
+        if (min(col.x, min(col.y, col.z)) > 9.1e3) break;
+    }
+    col += nv_corona(v.dir, radius + 0.3 * voice + 1.5 * glow, t, detail, surfCol, mix(coreCol, surfCol, 0.6 * glow), haloCol) * (1.0 - 0.25 * glow);
+    // Fewer, longer steps gather proportionally less light; scale back up.
+    // The voice's spikes go in with the rest of the light, so rim and spike
+    // are toned together and meet without a seam.
+    return nv_tanh(col / (2.6e3 * detail) + rays);
+}
+
+// How far a full wave reaches past the rim, in radii. The disc's own glow
+// runs a third of a radius or so past the rim, so the waves have to reach
+// well beyond it to show at all.
+const float nv_rayReach = 1.6;
+
+// The voice at the silhouette, as light for the orb to tone-map with the
+// rest of its own: broad petals all the way round the disc, fewer and wider
+// for a low voice and more for a high one, each ring drifting round the
+// rim its own way under a slow swell that lets some petals grow while
+// others rest. Added from the rim outward and never on the body, so they
+// read as the outline heaving rather than as marks laid on it; taken in
+// screen angle rather than on the tumbling sphere, since they belong to
+// the silhouette.
+float3 nv_rays(float2 cc, float2 R, float t, float radius,
+                      float voice, float pitch, float paper, float3 surfCol, float3 haloCol) {
+    if (voice < 0.003) return float3(0.0);
+    // The sphere's projected radius: it sits 13 units down the view axis.
+    float rim = R.y * 1.28 * radius / sqrt(169.0 - radius * radius);
+    float rho = length(cc) / max(rim, 1e-3);
+    if (rho < 0.85 || rho > 3.0) return float3(0.0);
+    float a = atan(cc.y, cc.x);
+    float coarse = 0.5 + 0.5 * sin(6.0 * a + 0.9 * t);
+    float fine = 0.5 + 0.5 * sin(11.0 * a - 1.3 * t + 0.7);
+    float swell = 0.55 + 0.45 * sin(3.0 * a - 0.6 * t + 2.0);
+    float wave = mix(coarse, fine, pitch) * swell;
+    // Even the troughs reach a little: the whole outline swells with the
+    // voice, and the petals rise out of that.
+    float reach = nv_rayReach * voice * (0.3 + 0.7 * wave);
+    float x = rho - 1.0;
+    // Where this pixel sits along the wave, rim 0 to tip 1.
+    float along = clamp(x / max(reach + 0.03, 1e-3), 0.0, 1.0);
+    // Eases in over the rim's glow and out to a soft tip.
+    float lit = voice * (0.4 + 0.6 * wave) * (1.0 - smoothstep(0.3, 1.0, along)) * smoothstep(-0.1, 0.25, x);
+    // The shell's colour at the rim, the halo's at the tip; on a dark canvas
+    // a touch toward white, the brightest light there is — on paper white
+    // is the page.
+    float3 tint = mix(surfCol, haloCol, along);
+    return lit * (tint * 1.2 + 0.3 * (1.0 - paper));
+}
+
+// MARK: - Entry points
+
+float4 nv_finish(float3 base, float2 position, float4 boundingRect, float brightness, float saturation, float paper) {
+    if (base.x != base.x || base.y != base.y || base.z != base.z) base = float3(0.0);
+    float3 col = base * brightness;
+    float luma = dot(col, float3(0.2126, 0.7152, 0.0722));
+    // Paper wants the chroma: an orb can only add light to a white page, so
+    // its colour is all that is left of it there.
+    col = mix(float3(luma), col, saturation * (1.0 + 0.3 * paper));
+    col = nv_dither(col, position);
+    col = clamp(col, 0.0, 1.0);
+    // Feathered toward the bounds so the corona fades into the canvas rather
+    // than ending at a rim — done here rather than with a mask, which would
+    // cost an offscreen pass per orb per frame. Starts far enough out that a
+    // voice's spikes have room before the fade takes them.
+    float edge = length(position / boundingRect.zw - 0.5) * 2.0;
+    col *= 1.0 - smoothstep(0.7, 1.0, edge);
+    // Premultiplied. On a dark canvas the darkness between the glow is
+    // transparency, not black. On paper the orb is paint wherever its light
+    // is strong — opaque there, at full colour — and only its outer glow is
+    // a tint on the page. The colour is never darkened by how little light
+    // was gathered: that is always least at the rim, and a darker rim reads
+    // as a ring drawn round the orb.
+    float light = max(col.r, max(col.g, col.b));
+    float alpha = mix(light, smoothstep(0.06, 0.6, light), paper);
+    float3 vivid = col / max(light, 1e-4);
+    return float4(float3(vivid * alpha), float(alpha));
+}
+
+float2 nv_frame(float2 position, float4 boundingRect, float scale) {
+    float2 R = boundingRect.zw;
+    float2 U = float2(position.x, R.y - position.y);
+    U = R * 0.5 + (U - R * 0.5) * 2.0;
+    return (U * 2.0 - R) / max(scale, 0.001);
+}
+
+
+half4 main(float2 position) {
+    float4 bounds = float4(0.0, 0.0, resolution.x, resolution.y);
+    float2 cc = nv_frame(position, bounds, liveScale);
+    float3 rays = nv_rays(cc, resolution, time, 2.5,
+        clamp(liveVoice, 0.0, 1.0), clamp(livePitch, 0.0, 1.0), clamp(paper, 0.0, 1.0),
+        float3(surfaceColor.rgb), float3(haloColor.rgb));
+    float3 base = nvAurora(cc, resolution, time, liveTurbulence, max(detail, 0.25),
+        clamp(liveVoice, 0.0, 1.0), clamp(livePitch, 0.0, 1.0), clamp(liveGlow, 0.0, 1.0),
+        rays, float3(surfaceColor.rgb), float3(coreColor.rgb), float3(haloColor.rgb));
+    return half4(nv_finish(base, position, bounds, liveBrightness, liveSaturation, clamp(paper, 0.0, 1.0)));
+}

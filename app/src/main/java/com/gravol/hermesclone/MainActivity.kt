@@ -49,6 +49,7 @@ import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import com.gravol.hermesclone.ui.theme.HermexTheme
+import com.gravol.hermesclone.feature.home.HomeScreen
 import com.gravol.hermesclone.ui.theme.UiColorOverrides
 import com.gravol.hermesclone.ui.theme.hexToColor
 import java.net.URLDecoder
@@ -115,7 +116,7 @@ class MainActivity : ComponentActivity() {
                     gaugeTrack = uiGaugeHex?.let { hex -> runCatching { hexToColor(hex) }.getOrNull() },
                 )
             }
-            HermexTheme(accentColor = accentColor, uiOverrides = uiOverrides, monospace = uiMonospace) {
+            HermexTheme(darkTheme = true, dynamicColor = false) {
                 val baseDensity = LocalDensity.current
                 val scaledDensity = Density(
                     density = baseDensity.density * (zoomPercent / 100f),
@@ -241,7 +242,7 @@ fun HermexNavGraph(chatVmsHolder: ChatVmsHolder) {
                     }
                 }
             }
-            SessionsScreen(
+            HomeScreen(
                 onSessionTap = { session ->
                     val encodedTitle = URLEncoder.encode(session.title ?: session.id, "UTF-8")
                     navController.navigate("chat/${session.id}/$encodedTitle")
@@ -249,11 +250,8 @@ fun HermexNavGraph(chatVmsHolder: ChatVmsHolder) {
                 onSettings = {
                     navController.navigate("settings")
                 },
+                onOpenDevices = { navController.navigate("settings") },
                 activeSessions = chatVmsHolder.activeSessions,
-                onOpenCron = { navController.navigate("cron") },
-                onOpenBotScreen = { navController.navigate("botscreen") },
-                onOpenSkills = { navController.navigate("skills") },
-                onOpenConfig = { navController.navigate("config") },
                 viewModel = sessionsVm,
             )
         }

@@ -1,32 +1,59 @@
-// File: app/src/main/java/com/hermex/android/ui/theme/Color.kt
+// Official Hermes app palette — sampled from rendered reference screenshots.
 package com.gravol.hermesclone.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-val Purple80 = Color(0xFFD0BCFF)
-val PurpleGrey80 = Color(0xFFCCC2DC)
-val Pink80 = Color(0xFFEFB8C8)
+// Core canvas
+val HermesBackground = Color(0xFF000022)   // home/chat canvas
+val HermesSurface = Color(0xFF0C1A3C)      // pills, composer, search bar
+val HermesSurfaceActive = Color(0xFF29294C) // selected pill / active tab
+val HermesSurfaceRaised = Color(0xFF14224A) // menus, cards on surface
+val HermesBackdrop = Color(0xFF101A3C)
 
-val Purple40 = Color(0xFF6650a4)
-val PurpleGrey40 = Color(0xFF625b71)
-val Pink40 = Color(0xFF7D5260)
+// Text
+val HermesTextPrimary = Color(0xFFF2F4FA)
+val HermesTextSecondary = Color(0xFF8A93B8)  // subtitles, times
+val HermesTextTertiary = Color(0xFF5D6690)   // "N more sessions", hints
 
-// App-specific colors
-val DarkBackground = Color(0xFF0B141A)
-val DarkSurface = Color(0xFF1A1F25)
-val DarkSurfaceVariant = Color(0xFF242A31)
-val Primary = Color(0xFF00D1FF)
-val PrimaryVariant = Color(0xFF00B8E6)
-val Secondary = Color(0xFF00D1FF)
-val SecondaryVariant = Color(0xFF00B8E6)
-val OnPrimary = Color(0xFF000000)
-val OnSecondary = Color(0xFF000000)
-val OnBackground = Color(0xFFE6E6E6)
-val OnSurface = Color(0xFFE6E6E6)
-val OnSurfaceVariant = Color(0xFF9BA3A0)
-val Error = Color(0xFFB00020)
+// Accents
+val HermesAccent = Color(0xFF3078F0)        // unread dots, Working, links
+val HermesFab = Color(0xFF1D2761)           // compose FAB / send circle
+val HermesFabBright = Color(0xFF2A3A8C)
+val HermesError = Color(0xFFFF6B6B)
+val HermesErrorBg = Color(0xFF3A1220)
 
-// Header logo colors
+// Tree
+val HermesRail = Color(0xFF2A3560)          // tree connector lines
+val HermesDivider = Color(0xFF1A2450)
+
+// Legacy aliases kept so existing screens keep compiling (re-pointed at the
+// official palette so every screen inherits the new look in one step).
+val DarkBackground = HermesBackground
+val DarkSurface = HermesSurface
+val DarkSurfaceVariant = HermesSurfaceActive
+val Primary = HermesAccent
+val PrimaryVariant = HermesFabBright
+val Secondary = HermesAccent
+val SecondaryVariant = HermesFabBright
+val OnPrimary = Color(0xFFFFFFFF)
+val OnSecondary = Color(0xFFFFFFFF)
+val OnBackground = HermesTextPrimary
+val OnSurface = HermesTextPrimary
+val OnSurfaceVariant = HermesTextSecondary
+val Error = HermesError
+
+// Agent avatar accents (provisional hash-derived fallback; the exact official
+// derivation lands with OrbAvatar once the RE pass pins it down).
+val HermesAvatarFallbacks = listOf(
+    Color(0xFF7C50F5), // purple
+    Color(0xFF48D8C0), // teal
+    Color(0xFF66DD4D), // green
+    Color(0xFF5B8DEF), // blue
+    Color(0xFFE8785F), // coral
+    Color(0xFFD050C8), // magenta
+)
+
+data class HeaderLogoPreset(val name: String, val color: Color)
 val HeaderLogoColors = listOf(
     HeaderLogoPreset("Yellow", Color(0xFFFFD700)),
     HeaderLogoPreset("Blue", Color(0xFF5B7CFF)),
@@ -34,12 +61,9 @@ val HeaderLogoColors = listOf(
     HeaderLogoPreset("Red", Color(0xFFFF3B30)),
     HeaderLogoPreset("Green", Color(0xFF34C759)),
     HeaderLogoPreset("White", Color(0xFFFFFFFF)),
-    HeaderLogoPreset("Custom", Color(0xFFFFD700))
+    HeaderLogoPreset("Custom", Color(0xFFFFD700)),
 )
 
-data class HeaderLogoPreset(val name: String, val color: Color)
-
-// Utility functions for color operations
 fun hexToColor(hex: String): Color {
     val cleanHex = hex.trim().removePrefix("#")
     return when {
@@ -60,7 +84,6 @@ fun colorToHex(color: Color): String {
     )
 }
 
-// Calculate luminance for dark/light foreground detection
 fun isDarkForeground(color: Color): Boolean {
     val luminance = 0.2126 * color.red + 0.7152 * color.green + 0.0722 * color.blue
     return luminance > 0.62

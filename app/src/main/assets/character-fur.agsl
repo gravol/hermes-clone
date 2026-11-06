@@ -1,0 +1,236 @@
+uniform shader body;
+uniform float2 center;
+uniform float2 radii;
+uniform float hair;
+uniform float time;
+uniform float seed;
+uniform float amount;
+uniform float pixelsPerUnit;
+uniform float3 rotX;
+uniform float3 rotY;
+uniform float3 rotZ;
+uniform float2 comb;
+float cf_hash3(float3 p) {
+    p = fract(p * 0.1031);
+    p += dot(p, p.zyx + 31.32);
+    return fract((p.x + p.y) * p.z);
+}
+
+float3 cf_hash33(float3 p) {
+    p = fract(p * float3(0.1031, 0.1030, 0.0973));
+    p += dot(p, p.yxz + 33.33);
+    return fract((p.xxy + p.yxx) * p.zyx);
+}
+
+float cf_noise3(float3 p) {
+    float3 i = floor(p);
+    float3 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float n000 = cf_hash3(i);
+    float n100 = cf_hash3(i + float3(1, 0, 0));
+    float n010 = cf_hash3(i + float3(0, 1, 0));
+    float n110 = cf_hash3(i + float3(1, 1, 0));
+    float n001 = cf_hash3(i + float3(0, 0, 1));
+    float n101 = cf_hash3(i + float3(1, 0, 1));
+    float n011 = cf_hash3(i + float3(0, 1, 1));
+    float n111 = cf_hash3(i + float3(1, 1, 1));
+    return mix(mix(mix(n000, n100, f.x), mix(n010, n110, f.x), f.y),
+               mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y), f.z);
+}
+
+/// The view-space normal of the ellipsoid grown by `grow` units, at `p`.
+float3 cf_normal(float2 p, float2 center, float2 radii, float grow) {
+    float2 local = (p - center) / max(radii + grow, float2(1.0));
+    float z = sqrt(max(0.0, 1.0 - dot(local, local)));
+    return normalize(float3(local, z));
+}
+
+/// Two hair grids, each turned by its own fixed rotation so neither lines up
+/// with the screen or the other: one grid alone shows its lattice.
+const float3x3 GRID_A = float3x3(float3(-0.00138, -0.22237, -0.97496),
+                                    float3(0.99773, -0.06600, 0.01364),
+                                    float3(-0.06738, -0.97273, 0.22196));
+const float3x3 GRID_B = float3x3(float3(-0.66160, -0.48265, 0.57388),
+                                    float3(0.11240, -0.82050, -0.56048),
+                                    float3(0.74139, -0.30631, 0.59709));
+
+/// One grid's hair at body direction `u`, height `t`: how much of this point
+/// it covers, and the hair's own shade jitter in `shade`.
+float cf_strand(float3 u, float cells, float radius, float t, float clump, float salt,
+                       float edgeSoftness, inout float shade) {
+    float3 grid = u * cells;
+    float3 cell = floor(grid);
+    float3 h = cf_hash33(cell + salt);
+    shade = h.y;
+    float tallness = mix(0.35, 1.0, h.x) * mix(0.72, 1.08, clump);
+    if (t >= tallness) { return 0.0; }
+    float3 offset = grid - cell - (0.5 + (h.zxy - 0.5) * 0.6);
+    float3 across = offset - dot(offset, u) * u;
+    float taper = pow(1.0 - t / tallness, 0.6) * radius;
+    return smoothstep(taper + edgeSoftness, taper - edgeSoftness, length(across));
+}
+
+/// One layer of the fringe: strands seen side-on past the silhouette, one per
+/// slot round the rim, rooted at the edge, tapering and curling outward.
+/// `slot` is this pixel's position round the rim in slots, `outsideDist` how far past
+/// the edge it is in hair lengths. A strand is `reach` hair lengths long at
+/// most, `width` of its slot wide at the root, `opacity` opaque; only a share
+/// `presence` of the slots has one (1 for the fuzz, a few for flyaways).
+float cf_fringe(float slot, float outsideDist, float seed, float edgeSoftness, float clumpAt,
+                       float reach, float width, float opacity, float presence,
+                       inout float shade) {
+    float best = 0.0;
+    for (int k = -1; k <= 1; k++) {
+        float index = floor(slot) + float(k);
+        float h1 = cf_hash3(float3(index, seed, 1.7));
+        float h2 = cf_hash3(float3(index, seed, 5.3));
+        float h3 = cf_hash3(float3(index, seed, 9.1));
+        float h4 = cf_hash3(float3(index, seed, 3.9));
+        if (h4 > presence) { continue; }
+        float length = reach * mix(0.45, 1.0, h1) * mix(0.8, 1.06, clumpAt);
+        if (outsideDist >= length) { continue; }
+        float along = outsideDist / length;
+        // Curl more toward the tip, each strand its own way.
+        float curl = (h3 - 0.5) * 2.4 * along * along;
+        float across = slot - (index + 0.5 + (h2 - 0.5) * 0.4 + curl);
+        float halfWidth = width * pow(1.0 - along, 0.7);
+        float cover = smoothstep(halfWidth + edgeSoftness, halfWidth - edgeSoftness, abs(across))
+            * opacity * (1.0 - along * 0.5);
+        if (cover > best) { best = cover; shade = h2; }
+    }
+    return best;
+}
+
+half4 main(float2 position) {
+    const float TAU = 6.2831853;
+    float2 d = position - center;
+    float r = length(d);
+    float2 dir = r > 0.001 ? d / r : float2(0.0, -1.0);
+    float2 tangent = float2(-dir.y, dir.x);
+    float L = hair * amount;
+    float radius = max(radii.x, radii.y);
+
+    half4 here = body.eval(position);
+    bool inside = here.a > 0.5;
+    if (L < 0.01) { return here; }
+
+    // Body-space direction under this pixel: the inverse head rotation
+    // applied to the ellipsoid's normal.
+    float3 n0 = cf_normal(position, center, radii, 0.0);
+    float3 u0 = rotX * n0.x + rotY * n0.y + rotZ * n0.z;
+    float clump = cf_noise3(u0 * 7.0 + seed);
+    float sway = cf_noise3(u0 * 3.0 + float3(time * 0.0005, seed, 0.0)) - 0.5;
+    float2 bend = comb + tangent * sway * 0.5;
+
+    // The light, from the upper left and toward the viewer, and the half
+    // vector Kajiya-Kay measures the hair tangent against.
+    float3 lightDir = normalize(float3(-0.45, -0.6, 0.66));
+    float3 halfVector = normalize(lightDir + float3(0.0, 0.0, 1.0));
+
+    // About one hair per 1.3 body units on a 100-unit body.
+    float cells = max(20.0, radius / (1.3 * pixelsPerUnit));
+    float cellPixels = radius / cells;
+    float detail = clamp((cellPixels - 1.2) / 1.8, 0.0, 1.0);
+    float edgeSoftness = clamp(0.6 / max(cellPixels, 0.01), 0.04, 0.5);
+
+    if (!inside) {
+        // FINS. How far past the silhouette this pixel is, and the body's
+        // colour just inside it.
+        float reach = L * (1.0 + length(comb));
+        half4 before = here;
+        float found = -1.0;
+        half4 root = here;
+        for (int k = 1; k <= 10; k++) {
+            float f = float(k) / 10.0;
+            half4 s = body.eval(position - dir * reach * f);
+            if (s.a > 0.5) {
+                float edge = float(s.a - before.a);
+                float sub = edge > 0.001 ? clamp((0.5 - float(before.a)) / edge, 0.0, 1.0) : 1.0;
+                found = f - (1.0 - sub) / 10.0;
+                root = body.eval(position - dir * reach * min(1.0, f + 0.25));
+                break;
+            }
+            before = s;
+        }
+        // Nothing solid within reach: keep what was drawn here (the faint
+        // edge of a thin halo, say) rather than erasing it.
+        if (found < 0.0) { return here; }
+        // The layer is premultiplied; its colour is the colour over alpha.
+        float3 rootColor = float3(root.rgb) / max(float(root.a), 0.001);
+        float past = found * reach;
+        // The comb lifts or flattens the fringe and leans it sideways; the
+        // fringe turns with the head, so a spin scrolls it.
+        float2 lean = bend * L;
+        float outsideDist = clamp((past + dot(lean, dir) * 0.5) / max(L, 0.001), 0.0, 1.0);
+        // The fringe is a fuzz, not a ring of rays: a feathered edge at the
+        // root, three layers of short, very fine, half-clear strands over it,
+        // and only now and then a longer stray hair.
+        float slots = max(90.0, TAU * radius / 0.5);
+        float yawTurn = atan(rotZ.x, rotZ.z) / TAU;
+        float angle = atan(d.y, d.x) / TAU;
+        float slide = dot(lean, tangent) * outsideDist * outsideDist / max(r, 1.0) / TAU;
+        float slot = (angle - slide + yawTurn) * slots;
+        float slotPixels = TAU * r / slots * pixelsPerUnit;
+        float finDetail = clamp((slotPixels - 0.9) / 1.4, 0.0, 1.0);
+        float finSoftness = clamp(0.6 / max(slotPixels, 0.01), 0.05, 0.5);
+        float shadeA = 0.5, shadeB = 0.5, shadeC = 0.5, shadeD = 0.5;
+        float a = cf_fringe(slot, outsideDist, seed, finSoftness, clump, 0.55, 0.36, 0.7, 1.0, shadeA);
+        float b = cf_fringe(slot * 1.37 + 0.21, outsideDist, seed + 19.0, finSoftness, clump, 0.45, 0.32, 0.6, 1.0, shadeB);
+        float c = cf_fringe(slot * 1.83 + 0.53, outsideDist, seed + 31.0, finSoftness, clump, 0.36, 0.3, 0.5, 1.0, shadeC);
+        float flyaway = cf_fringe(slot * 0.41 + 0.77, outsideDist, seed + 47.0, finSoftness * 1.4, clump,
+                                  1.0, 0.22, 0.55, 0.16, shadeD);
+        float strands = 1.0 - (1.0 - a) * (1.0 - b) * (1.0 - c) * (1.0 - flyaway);
+        float average = 0.8 * pow(max(0.0, 1.0 - outsideDist / 0.55), 1.5) + 0.06 * smoothstep(1.0, 0.5, outsideDist);
+        // Under the strands, a feathered root: the body's edge blurs into its
+        // own pile rather than ending in a cut line.
+        float haze = 0.9 * pow(max(0.0, 1.0 - outsideDist / 0.3), 1.6);
+        float cover = max(mix(average, strands, finDetail), haze) * smoothstep(1.0, 0.8, outsideDist);
+        if (cover <= 0.001) { return here; }
+        float jitter = max(max(shadeA, shadeB), max(shadeC, shadeD));
+        float3 hairTangent = normalize(float3(dir, 0.15));
+        float along = dot(hairTangent, halfVector);
+        float sheen = pow(sqrt(max(0.0, 1.0 - along * along)), 48.0) * 0.14 * outsideDist;
+        float shade = mix(1.0, 1.12, min(1.0, outsideDist / 0.55)) * mix(0.96, 1.04, mix(0.5, jitter, finDetail));
+        float3 color = rootColor * shade + sheen;
+        // Over whatever faint edge was drawn here already.
+        return half4(half3(color * cover), half(cover)) + here * half(1.0 - cover);
+    }
+
+    // 12, from the tips inward, front to back. An anti-aliased edge
+    // pixel is premultiplied; the coat covers it in the body's own colour.
+    float3 skinColor = float3(here.rgb) / max(float(here.a), 0.001);
+    float3 color = float3(0.0);
+    float alpha = 0.0;
+    for (int k = 12 - 1; k >= 1; k--) {
+        float t = float(k) / float(12 - 1);
+        float height = t * L;
+        float2 shift = bend * L * t * t;
+        float3 n = cf_normal(position - shift, center, radii, height);
+        float3 u = rotX * n.x + rotY * n.y + rotZ * n.z;
+
+        float shadeA = 0.5, shadeB = 0.5;
+        float a = cf_strand(GRID_A * u, cells, 0.4, t, clump, seed, edgeSoftness, shadeA);
+        float b = cf_strand(GRID_B * u, cells * 1.31, 0.36, t, clump, seed + 23.0, edgeSoftness, shadeB);
+        float strands = 1.0 - (1.0 - a) * (1.0 - b);
+        // What a shell averages to once single hairs are too small to see.
+        float average = 1.0 - pow(1.0 - 0.42 * pow(max(0.0, 1.0 - t), 1.6), 2.0);
+        float cover = mix(average, strands, detail);
+        if (cover <= 0.001) { continue; }
+
+        // Shade: roots in the pile's shadow, tips in the light, a little
+        // variation from hair to hair, and the sheen along the strands.
+        float3 hairTangent = normalize(n + float3(shift / max(L, 0.001), 0.0) * 0.6);
+        float along = dot(hairTangent, halfVector);
+        float sheen = pow(sqrt(max(0.0, 1.0 - along * along)), 48.0) * 0.16 * t;
+        float jitter = mix(0.5, a >= b ? shadeA : shadeB, detail);
+        float shade = mix(0.95, 1.15, t) * mix(0.96, 1.04, jitter);
+        float3 strandColor = skinColor * shade + sheen;
+
+        color += (1.0 - alpha) * cover * strandColor;
+        alpha += (1.0 - alpha) * cover;
+        if (alpha > 0.995) { break; }
+    }
+    // The skin between the hairs, a little in the pile's shadow.
+    color += (1.0 - alpha) * skinColor * 0.9;
+    return half4(half3(color), half(1.0));
+}
