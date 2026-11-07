@@ -12,6 +12,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -29,6 +30,7 @@ import androidx.compose.ui.unit.sp
 import com.gravol.hermesclone.core.network.DashboardApiClient
 import com.gravol.hermesclone.core.network.NetworkResult
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.put
 
 // ─────────────────────────────────────────────────────────────
 // Cron jobs
@@ -474,6 +476,11 @@ fun SkillsScreen(
     val scope = rememberCoroutineScope()
     var skills by remember { mutableStateOf<List<DashboardApiClient.SkillInfo>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    // v0.2.7 official parity: show-mode + category filter + New Skill sheet
+    var showMode by remember { mutableStateOf("All") }        // All | Enabled | Disabled
+    var category by remember { mutableStateOf<String?>(null) } // null = all categories
+    var showFilter by remember { mutableStateOf(false) }
+    var showNew by remember { mutableStateOf(false) }
 
     fun load() {
         scope.launch {
@@ -489,15 +496,27 @@ fun SkillsScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Skills & Tools") },
+                title = {
+                    val list = skills
+                    Text(
+                        if (list == null) "Skills"
+                        else "Installed ${list.size} · ${list.count { it.enabled }} on",
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
                 actions = {
+                    IconButton(onClick = { showFilter = true }) {
+                        Icon(Icons.Default.FilterList, contentDescription = "Filter & Sort")
+                    }
                     IconButton(onClick = { load() }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                    }
+                    IconButton(onClick = { showNew = true }) {
+                        Icon(Icons.Default.Add, contentDescription = "New Skill")
                     }
                 },
             )
@@ -522,11 +541,17 @@ fun SkillsScreen(
                     }
                 }
                 else -> {
+                    val filtered = skills!!.filter { sk ->
+                        (showMode == "All" ||
+                            (showMode == "Enabled" && sk.enabled) ||
+                            (showMode == "Disabled" && !sk.enabled)) &&
+                        (category == null || sk.category.equals(category, ignoreCase = true))
+                    }
                     LazyColumn(
                         contentPadding = PaddingValues(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        items(skills!!, key = { it.name }) { skill ->
+                        items(filtered, key = { it.name }) { skill ->
                             Card(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -599,6 +624,89 @@ fun SkillsScreen(
             }
         }
     }
+
+    // v0.2.7: official Filter & Sort sheet (Show + Categories)
+    if (showFilter) {
+        val all = skills ?: emptyList()
+        val cats = all.mapNotNull { it.category?.takeIf { c -> c.isNotBlank() } }.distinct().sorted()
+        AlertDialog(
+            onDismissRequest = { showFilter = false },
+            title = { Text("Filter & Sort") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Text("Show", style = MaterialTheme.typography.labelMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf("All", "Enabled", "Disabled").forEach { m ->
+                            FilterChip(m == showMode, { showMode = m }, label = { Text(m) })
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Text("Categories", style = MaterialTheme.typography.labelMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(category == null, { category = null }, label = { Text("All") })
+                    }
+                    cats.chunked(3).forEach { row ->
+                        Spacer(Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            row.forEach { c ->
+                                FilterChip(
+                                    category == c,
+                                    { category = if (category == c) null else c },
+                                    label = { Text(c, maxLines = 1) },
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showFilter = false }) { Text("Done") } },
+        )
+    }
+
+    // v0.2.7: New Skill (official Add Skill → New Skill)
+    if (showNew) {
+        var name by remember { mutableStateOf("") }
+        var content by remember { mutableStateOf("---\nname: \ndescription: \n---\n\n") }
+        var busy by remember { mutableStateOf(false) }
+        AlertDialog(
+            onDismissRequest = { showNew = false },
+            title = { Text("New Skill") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    OutlinedTextField(name, { name = it }, label = { Text("name (kebab-case)") }, singleLine = true)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        content, { content = it },
+                        label = { Text("SKILL.md") },
+                        minLines = 6,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (name.isBlank()) return@TextButton
+                    busy = true
+                    scope.launch {
+                        val r = DashboardApiClient.apiSend(
+                            "/api/skills", "POST",
+                            kotlinx.serialization.json.buildJsonObject {
+                                put("name", name)
+                                put("content", content)
+                            }.toString(),
+                        )
+                        busy = false
+                        showNew = false
+                        when (r) {
+                            is NetworkResult.Success -> load()
+                            is NetworkResult.HttpError -> Toast.makeText(context, "Server error (${r.code})", Toast.LENGTH_SHORT).show()
+                            is NetworkResult.Error -> Toast.makeText(context, "Failed: ${r.exception.message}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }) { Text(if (busy) "Creating…" else "Create") }
+            },
+            dismissButton = { TextButton(onClick = { showNew = false }) { Text("Cancel") } },
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -651,19 +759,49 @@ fun SkillDetailScreen(skillName: String, onBack: () -> Unit) {
                     }
                 }
                 else -> {
+                    var draft by remember(content) { mutableStateOf(content!!) }
+                    var saving by remember { mutableStateOf(false) }
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .verticalScroll(rememberScrollState())
                             .padding(16.dp),
                     ) {
-                        Text(
-                            text = content!!,
-                            style = MaterialTheme.typography.bodySmall.copy(
+                        OutlinedTextField(
+                            draft, { draft = it },
+                            Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
+                            textStyle = MaterialTheme.typography.bodySmall.copy(
                                 fontFamily = FontFamily.Monospace,
                                 lineHeight = 18.sp,
                             ),
                         )
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            onClick = {
+                                saving = true
+                                scope.launch {
+                                    val r = DashboardApiClient.apiSend(
+                                        "/api/skills/content", "PUT",
+                                        kotlinx.serialization.json.buildJsonObject {
+                                            put("name", skillName)
+                                            put("content", draft)
+                                        }.toString(),
+                                    )
+                                    saving = false
+                                    when (r) {
+                                        is NetworkResult.Success -> {
+                                            content = draft
+                                            Toast.makeText(context, "Saved", Toast.LENGTH_SHORT).show()
+                                        }
+                                        is NetworkResult.HttpError -> Toast.makeText(context, "Server error (${r.code})", Toast.LENGTH_SHORT).show()
+                                        is NetworkResult.Error -> Toast.makeText(context, "Failed: ${r.exception.message}", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = draft != content && !saving,
+                        ) { Text(if (saving) "Saving…" else "Save Changes") }
                     }
                 }
             }
