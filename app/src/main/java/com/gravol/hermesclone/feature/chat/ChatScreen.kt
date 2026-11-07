@@ -149,6 +149,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
@@ -230,6 +231,9 @@ fun ChatScreen(
     var composerText by remember { mutableStateOf("") }
     // The official timeline hides extended diagnostic cards by default.
     var showExtendedActivity by remember { mutableStateOf(false) }
+    // v0.2.5: composer bar height (px) — growth (multi-line draft, chips)
+    // must re-pin the transcript so the stream stays visible above it.
+    var composerBarH by remember { mutableStateOf(0) }
     val focusRequester = remember { FocusRequester() }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -897,6 +901,22 @@ fun ChatScreen(
         }
     }
 
+    // v0.2.5: when the composer grows (multi-line draft, activity chips) the
+    // viewport shrinks — re-pin to the newest line so the streaming answer
+    // stays above the chat box, exactly like the official app.
+    LaunchedEffect(composerBarH) {
+        if (composerBarH > 0 && !userScrolledUp && state.messages.isNotEmpty()) {
+            withFrameNanos { }
+            autoScrollToBottom(
+                listState = listState,
+                targetIndex = state.messages.lastIndex,
+                totalItems = state.messages.size,
+                scrollGeneration = state.scrollGeneration,
+                reason = "ComposerGrow",
+            )
+        }
+    }
+
     // Track composer focus separately (for other uses if needed)
 
     WebuiMenuDrawer(
@@ -980,7 +1000,7 @@ fun ChatScreen(
                 color = Color(0xFF000022),
                 modifier = Modifier.navigationBarsPadding(),
             ) {
-                Column {
+                Column(Modifier.onSizeChanged { composerBarH = it.height }) {
                     // v0.7.0: animated chip while this session has background
                     // tasks running; tap opens the Background Work sheet.
                     if (bgRunning > 0) {
@@ -1278,39 +1298,52 @@ fun ChatScreen(
                             else sendComposer()
                         }
                     }
-                    BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)
-                        // v0.2.4: was a FIXED height — a 3-line draft overflowed
-                        // into the model-chip/mic row ("text behind the buttons"
-                        // on the 10a). Now the card grows to fit the text; the
-                        // chip row stays pinned to the bottom of the grown card.
-                        .heightIn(min = if (activeComposer) 106.dp else 52.dp, max = 210.dp)
-                        .clip(RoundedCornerShape(if (activeComposer) 24.dp else 50.dp))
-                        .background(Color(0xFF0C1A3C)).border(1.dp, Color.White.copy(alpha = .07f), RoundedCornerShape(if (activeComposer) 24.dp else 50.dp))) {
+                    val hasSend = canSend || showStop
+                    val composerField = @Composable { alignMod: Modifier ->
                         BasicTextField(value = composerText, onValueChange = { composerText = it },
-                            modifier = Modifier.align(if (activeComposer) Alignment.TopStart else Alignment.CenterStart)
-                                .fillMaxWidth().padding(start = if (activeComposer) 14.dp else 56.dp, end = if (activeComposer) 14.dp else 56.dp, top = if (activeComposer) 14.dp else 0.dp)
+                            modifier = alignMod
                                 .focusRequester(focusRequester).onFocusChanged { composerFocused = it.isFocused },
                             textStyle = androidx.compose.ui.text.TextStyle(color = Color(0xFFF2F4FA), fontSize = 17.sp, fontFamily = ChatManrope),
-                            cursorBrush = SolidColor(Color(0xFF447CFF)), maxLines = 3,
+                            cursorBrush = SolidColor(Color(0xFF447CFF)), maxLines = 4,
                             decorationBox = { inner -> Box {
                                 if (composerText.isEmpty()) Text(if (state.isStreaming) "Queue a message..." else "Message Hermes...", color = Color(0xFF676571), fontSize = 17.sp, fontFamily = ChatManrope)
                                 inner()
                             } })
-                        Box(Modifier.align(if (activeComposer) Alignment.BottomStart else Alignment.CenterStart).padding(start = 6.dp, bottom = if (activeComposer) 6.dp else 0.dp)) { attach() }
-                        if (activeComposer) {
-                            Row(Modifier.align(Alignment.BottomStart).padding(start = 52.dp, bottom = 16.dp).clip(CircleShape).clickable { showModelPicker = true }.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Outlined.Psychology, null, tint = Color(0xFFA2A4B0), modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(5.dp))
-                                Text(state.currentModel?.let { shortModelName(it) } ?: "Model", color = Color(0xFFA2A4B0), fontSize = 13.sp, maxLines = 1, fontFamily = ChatManrope)
+                    }
+                    val modelChip = @Composable {
+                        Row(Modifier.clip(CircleShape).clickable { showModelPicker = true }.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Outlined.Psychology, null, tint = Color(0xFFA2A4B0), modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text(state.currentModel?.let { shortModelName(it) } ?: "Model", color = Color(0xFFA2A4B0), fontSize = 13.sp, maxLines = 1, fontFamily = ChatManrope)
+                        }
+                    }
+                    // v0.2.5b: ONE stable layout for all composer states (the
+                    // 0.2.5 if/else branch-swap destroyed the text-field node
+                    // on focus → instant unfocus → keyboard could never open).
+                    // Official parity: text row on top, +/model/mic/send row
+                    // underneath, always present. Card grows with the draft;
+                    // text can never overlap the button row; node identity is
+                    // preserved so focus survives every state change.
+                    Column(
+                        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)
+                            .clip(RoundedCornerShape(24.dp)).background(Color(0xFF0C1A3C))
+                            .border(1.dp, Color.White.copy(alpha = .07f), RoundedCornerShape(24.dp)),
+                    ) {
+                        composerField(Modifier.fillMaxWidth().padding(start = 14.dp, end = 14.dp, top = 12.dp))
+                        Row(
+                            Modifier.fillMaxWidth().padding(start = 6.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            attach()
+                            Spacer(Modifier.width(4.dp))
+                            modelChip()
+                            Spacer(Modifier.weight(1f))
+                            microphone()
+                            if (hasSend) {
+                                Spacer(Modifier.width(6.dp))
+                                sendOrStop()
                             }
                         }
-                        val hasSend = canSend || showStop
-                        if (activeComposer || !hasSend) {
-                            Box(Modifier.align(if (activeComposer) Alignment.BottomEnd else Alignment.CenterEnd)
-                                .padding(end = if (activeComposer && hasSend) 50.dp else 6.dp, bottom = if (activeComposer) 6.dp else 0.dp)) { microphone() }
-                        }
-                        if (hasSend) Box(Modifier.align(if (activeComposer) Alignment.BottomEnd else Alignment.CenterEnd)
-                            .padding(end = 6.dp, bottom = if (activeComposer) 6.dp else 0.dp)) { sendOrStop() }
                     }
                 }
             }
