@@ -57,6 +57,7 @@ import com.gravol.hermesclone.feature.hub.HubMessagingScreen
 import com.gravol.hermesclone.feature.hub.HubVoiceScreen
 import com.gravol.hermesclone.feature.hub.HubKeysScreen
 import com.gravol.hermesclone.feature.hub.HubInstancesScreen
+import com.gravol.hermesclone.feature.hub.HubKanbanScreen
 import com.gravol.hermesclone.feature.hub.HubLogsScreen
 import com.gravol.hermesclone.core.network.DashboardApiClient
 import com.gravol.hermesclone.core.network.DebugLog
@@ -353,6 +354,7 @@ fun HermexNavGraph(chatVmsHolder: ChatVmsHolder) {
         composable("hub-keys") { HubKeysScreen(onBack = { navController.popBackStack() }) }
         composable("hub-instances") { HubInstancesScreen(onBack = { navController.popBackStack() }) }
         composable("hub-logs") { HubLogsScreen(onBack = { navController.popBackStack() }) }
+        composable("hub-kanban") { HubKanbanScreen(onBack = { navController.popBackStack() }) }
         composable("hub-mcp") { McpScreen(onBack = { navController.popBackStack() }) }
         composable(
             route = "chat/{sessionId}/{title}/{bot}",

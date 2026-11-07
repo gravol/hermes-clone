@@ -167,8 +167,8 @@ fun BotHubScreen(
                     HubInnerRow(Icons.Filled.Inventory2, "Artifacts",
                         onClick = { onNavigate("hub-artifacts") })
                     HorizontalDivider(color = Color.White.copy(alpha = 0.06f))
-                    HubInnerRow(Icons.Filled.ViewKanban, "Kanban", "Not on gateway",
-                        onClick = { })
+                    HubInnerRow(Icons.Filled.ViewKanban, "Kanban", "Board lanes + tasks",
+                        onClick = { onNavigate("hub-kanban") })
                 }
             }
 
