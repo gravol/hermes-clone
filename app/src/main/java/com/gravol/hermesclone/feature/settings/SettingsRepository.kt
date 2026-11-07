@@ -85,6 +85,28 @@ class SettingsRepository(context: Context) {
     /** Locally pinned session ids (desktop-style client-side pinning). */
     val pinnedSessionIds: Flow<Set<String>> = store.getStringSet(KEY_PINNED_SESSIONS)
 
+    /** v0.2.10: per-session last-opened timestamps ("id:epochMillis" entries)
+     *  — the home Filters ▸ Show ▸ Unread signal (gateway has no unread flag). */
+    val sessionReadMarks: Flow<Set<String>> = store.getStringSet(KEY_SESSION_READ)
+
+    /** Map sessionId → last-read epoch millis. */
+    val sessionReadTimes: Flow<Map<String, Double>> = store.getStringSet(KEY_SESSION_READ)
+        .map { marks ->
+            marks.orEmpty().mapNotNull { m ->
+                val i = m.lastIndexOf(':')
+                val v = if (i <= 0) null else m.substring(i + 1).toLongOrNull()?.div(1000.0)
+                if (i <= 0 || v == null) null else m.substring(0, i) to v
+            }.toMap()
+        }
+
+    suspend fun markSessionRead(sessionId: String) {
+        val current = store.getStringSet(KEY_SESSION_READ).first().orEmpty()
+        // Drop this session's old mark (if any) so the set never grows per-id duplicates.
+        val next = current.filterNot { it.lastIndexOf(':').let { i -> i > 0 && it.substring(0, i) == sessionId } }.toMutableSet()
+        next += "$sessionId:${System.currentTimeMillis()}"
+        store.setStringSet(KEY_SESSION_READ, next)
+    }
+
     suspend fun setUiZoomPercent(value: Int) = store.setInt(KEY_UI_ZOOM, value)
 
     suspend fun setTextScalePercent(value: Int) = store.setInt(KEY_TEXT_SCALE, value)
@@ -204,6 +226,7 @@ class SettingsRepository(context: Context) {
         const val KEY_SHOW_TOOL_CALLS = "show_tool_calls"
         const val KEY_SHOW_THINKING = "show_thinking"
         const val KEY_PINNED_SESSIONS = "pinned_session_ids"
+        const val KEY_SESSION_READ = "session_read_marks"
         const val KEY_VOICE_REPLIES = "voice_replies"
         const val KEY_FOLD_TURNS = "fold_finished_turns"
         const val KEY_LINK_PREVIEWS = "link_previews"

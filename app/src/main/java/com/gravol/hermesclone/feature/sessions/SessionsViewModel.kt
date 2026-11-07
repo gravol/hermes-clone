@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.jsonObject
 
 /**
  * v0.1.902: the Insights panel's own view of the session list.
@@ -380,6 +381,116 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
             }.onFailure {
                 DebugLog.log("ERROR", "SessionsVM", "bots load failed: ${it.message}")
             }
+        }
+    }
+
+    // ── v0.2.10: official home Filters (Show / Include / Agents) ─────────────
+    data class HomeFilters(
+        val showMode: String = "All",                  // All | Unread | Working | Pinned
+        val includeRoutineRuns: Boolean = false,       // Include ▸ Routine runs (source cron/oneshot)
+        val includeArchived: Boolean = false,          // Include ▸ Archived
+        val selectedBots: Set<String>? = null,         // null = all agents
+    ) {
+        val includeSub: String
+            get() = when {
+                includeRoutineRuns && includeArchived -> "2 on"
+                includeRoutineRuns -> "Routine runs"
+                includeArchived -> "Archived"
+                else -> "None"
+            }
+        val agentsSub: String
+            get() = when {
+                selectedBots == null -> "All"
+                selectedBots.isEmpty() -> "None"
+                else -> "${selectedBots.size} selected"
+            }
+    }
+
+    private val _filters = MutableStateFlow(HomeFilters())
+    val filters: StateFlow<HomeFilters> = _filters.asStateFlow()
+
+    val readTimes: StateFlow<Map<String, Double>> = settingsRepo.sessionReadTimes
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap<String, Double>())
+
+    fun markSessionRead(sessionId: String) {
+        viewModelScope.launch { settingsRepo.markSessionRead(sessionId) }
+    }
+
+    fun setFilters(f: HomeFilters) {
+        DebugLog.log("INFO", "SessionsVM", "setFilters routine=${f.includeRoutineRuns} archived=${f.includeArchived} show=${f.showMode} bots=${f.selectedBots}")
+        val old = _filters.value
+        _filters.value = f
+        // (Re)fetch the Include extras when a toggle first turns on.
+        if (f.includeRoutineRuns && !old.includeRoutineRuns) loadExtras(routine = true, archived = f.includeArchived)
+        else if (f.includeArchived && !old.includeArchived) loadExtras(routine = f.includeRoutineRuns, archived = true)
+    }
+
+    /** REST-fetched rows for the Include toggles, per bot name. */
+    private val _routineExtras = MutableStateFlow<Map<String, List<JsonRpcClient.SessionInfo>>>(emptyMap())
+    private val _archivedExtras = MutableStateFlow<Map<String, List<JsonRpcClient.SessionInfo>>>(emptyMap())
+    val routineExtras: StateFlow<Map<String, List<JsonRpcClient.SessionInfo>>> = _routineExtras.asStateFlow()
+    val archivedExtras: StateFlow<Map<String, List<JsonRpcClient.SessionInfo>>> = _archivedExtras.asStateFlow()
+
+    private fun loadExtras(routine: Boolean, archived: Boolean) {
+        DebugLog.log("INFO", "SessionsVM", "loadExtras routine=$routine archived=$archived")
+        viewModelScope.launch {
+            val bots = _bots.value
+            suspend fun fetch(map: MutableMap<String, List<JsonRpcClient.SessionInfo>>, query: String) {
+                coroutineScope {
+                bots.map { g ->
+                    async {
+                        val r = com.gravol.hermesclone.core.network.DashboardApiClient.apiGet(
+                            "/api/sessions?limit=50&order=recent&profile=${g.name}&$query")
+                        if (r is com.gravol.hermesclone.core.network.NetworkResult.Success) {
+                            val el = r.data.jsonObject["sessions"]
+                            val list = if (el == null) emptyList() else runCatching {
+                                kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+                                    .decodeFromJsonElement(
+                                        kotlinx.serialization.builtins.ListSerializer(JsonRpcClient.SessionInfo.serializer()), el)
+                            }.getOrDefault(emptyList())
+                            if (list.isNotEmpty()) map[g.name] = list
+                            DebugLog.log("INFO", "SessionsVM",
+                                "extras ${g.name} $query → ${list.size} rows (${r::class.simpleName})")
+                        }
+                    }
+                }.awaitAll()
+                }
+            }
+            if (routine) {
+                val m = HashMap(_routineExtras.value)
+                fetch(m, "sources=cron%2Coneshot")
+                _routineExtras.value = m
+            }
+            if (archived) {
+                val m = HashMap(_archivedExtras.value)
+                fetch(m, "archived=only")
+                _archivedExtras.value = m
+            }
+        }
+    }
+
+    /** Raw bot groups + filters → groups exactly as the home tree should render. */
+    fun applyFilters(
+        groups: List<BotGroup>, f: HomeFilters, working: Set<String>,
+        pinned: Set<String>, read: Map<String, Double>,
+    ): List<BotGroup> {
+        val extras = HashMap<String, MutableList<JsonRpcClient.SessionInfo>>()
+        if (f.includeRoutineRuns) _routineExtras.value.forEach { (k, v) -> extras.getOrPut(k) { mutableListOf() } += v }
+        if (f.includeArchived) _archivedExtras.value.forEach { (k, v) -> extras.getOrPut(k) { mutableListOf() } += v }
+        val botOk = f.selectedBots?.let { sel -> groups.filter { it.name in sel } } ?: groups
+        return botOk.map { g ->
+            val merged = (g.sessions + (extras[g.name] ?: emptyList()))
+                .distinctBy { it.id }
+                .sortedByDescending { it.last_activity_at ?: it.started_at ?: 0.0 }
+            val filtered = merged.filter { s ->
+                when (f.showMode) {
+                    "Working" -> s.id in working
+                    "Pinned" -> s.id in pinned
+                    "Unread" -> (s.last_activity_at ?: s.started_at ?: 0.0) > (read[s.id] ?: 0.0)
+                    else -> true
+                }
+            }
+            g.copy(sessions = filtered)
         }
     }
 

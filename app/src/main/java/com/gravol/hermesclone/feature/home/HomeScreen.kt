@@ -19,6 +19,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -31,6 +33,11 @@ import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.SortByAlpha
 import androidx.compose.material.icons.filled.ViewList
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Inventory2
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Devices
@@ -130,6 +137,11 @@ fun HomeScreen(
     val bots by viewModel.bots.collectAsStateWithLifecycle()
     val activeMap by activeSessions.collectAsStateWithLifecycle()
     val workingIds by viewModel.working.collectAsStateWithLifecycle()
+    val homeFilters by viewModel.filters.collectAsStateWithLifecycle()
+    val pinnedSet by viewModel.pinnedIds.collectAsStateWithLifecycle()
+    val readMap by viewModel.readTimes.collectAsStateWithLifecycle()
+    val routineExtras by viewModel.routineExtras.collectAsStateWithLifecycle()
+    val archivedExtras by viewModel.archivedExtras.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { viewModel.loadBots() }
     LaunchedEffect(Unit) {
         while (true) {
@@ -139,6 +151,7 @@ fun HomeScreen(
     }
     var query by rememberSaveable { mutableStateOf("") }
     var showFilters by rememberSaveable { mutableStateOf(false) }
+    var filterSub by rememberSaveable { mutableStateOf<String?>(null) }
     var showMore by rememberSaveable { mutableStateOf(false) }
     var layoutMode by rememberSaveable { mutableStateOf(0) }
     var showHidden by rememberSaveable { mutableStateOf(false) }
@@ -168,8 +181,11 @@ fun HomeScreen(
     val windowOk: (Double?) -> Boolean = { ts ->
         windowDays == 0 || ts == null || ts * 1000.0 >= windowStartSec * 1000.0
     }
+    val filteredBots = remember(bots, homeFilters, workingIds, pinnedSet, readMap, routineExtras, archivedExtras) {
+        viewModel.applyFilters(bots, homeFilters, workingIds, pinnedSet, readMap)
+    }
     val displayGroups: List<HomeAgentGroup> = if (bots.isNotEmpty()) {
-        bots.mapNotNull { b ->
+        filteredBots.mapNotNull { b ->
             val sessions = b.sessions
                 .filter { windowOk(it.last_activity_at ?: it.started_at) }
                 .filter { s ->
@@ -370,7 +386,11 @@ fun HomeScreen(
                         Icon(Icons.Outlined.FilterList, "Filters",
                             tint = HermesTextPrimary, modifier = Modifier.size(21.dp))
                     }
-                    if (showFilters) FiltersMenu(onDismiss = { showFilters = false })
+                    if (showFilters) FiltersMenu(
+                        filters = homeFilters,
+                        onOpenSub = { filterSub = it },
+                        onDismiss = { showFilters = false },
+                    )
                 }
                 Box {
                     PillButton(onClick = { showMore = true }) {
@@ -414,6 +434,15 @@ fun HomeScreen(
             )
         }
 
+        filterSub?.let { which ->
+            FilterSubmenu(
+                which = which,
+                filters = homeFilters,
+                botNames = bots.map { it.name to it.displayName },
+                onFilters = { viewModel.setFilters(it) },
+                onDismiss = { filterSub = null },
+            )
+        }
         menuSession?.let { s ->
             SessionContextMenu(session = s, onDismiss = { menuSession = null })
         }
@@ -446,19 +475,75 @@ private fun PillButton(active: Boolean = false, onClick: () -> Unit, content: @C
 }
 
 @Composable
-private fun FiltersMenu(onDismiss: () -> Unit) {
+private fun FiltersMenu(
+    filters: SessionsViewModel.HomeFilters,
+    onOpenSub: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    // v0.2.10: official Filters main popup. Submenus open as a SEPARATE
+    // HomeScreen-hosted popup (FilterSubmenu) — two overlapping popups made
+    // every submenu row but the first eat touches in the window below.
     Popup(alignment = Alignment.TopEnd, properties = PopupProperties(focusable = true), onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
                 .padding(top = 96.dp, end = 14.dp)
-                .width(230.dp)
+                .width(280.dp)
                 .clip(RoundedCornerShape(18.dp))
                 .background(HermesSurfaceRaised)
                 .padding(vertical = 8.dp),
         ) {
-            MenuRow("Show", "All", Icons.Filled.FolderOpen, onDismiss)
-            MenuRow("Include", "None", Icons.Filled.Layers, onDismiss)
-            MenuRow("Agents", "All", Icons.Filled.People, onDismiss)
+            MenuRow("Show", filters.showMode, Icons.Filled.FolderOpen) { onOpenSub("show"); onDismiss() }
+            MenuRow("Include", filters.includeSub, Icons.Filled.Layers) { onOpenSub("include"); onDismiss() }
+            MenuRow("Agents", filters.agentsSub, Icons.Filled.People) { onOpenSub("agents"); onDismiss() }
+        }
+    }
+}
+
+@Composable
+private fun FilterSubmenu(
+    which: String,
+    filters: SessionsViewModel.HomeFilters,
+    botNames: List<Pair<String, String>>,
+    onFilters: (SessionsViewModel.HomeFilters) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Popup(alignment = Alignment.TopEnd, properties = PopupProperties(focusable = true), onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .padding(top = 96.dp, end = 14.dp)
+                .width(280.dp)
+                .verticalScroll(rememberScrollState())
+                .clip(RoundedCornerShape(18.dp))
+                .background(HermesSurfaceRaised)
+                .padding(vertical = 8.dp),
+        ) {
+            when (which) {
+                "show" -> listOf("All", "Unread", "Working", "Pinned").forEach { m ->
+                    MenuCheck(m, Icons.Filled.Visibility, filters.showMode == m) {
+                        onFilters(filters.copy(showMode = m)); onDismiss()
+                    }
+                }
+                "include" -> {
+                    MenuCheck("Routine runs", Icons.Filled.History, filters.includeRoutineRuns) {
+                        onFilters(filters.copy(includeRoutineRuns = !filters.includeRoutineRuns))
+                    }
+                    MenuCheck("Archived", Icons.Filled.Inventory2, filters.includeArchived) {
+                        onFilters(filters.copy(includeArchived = !filters.includeArchived))
+                    }
+                }
+                "agents" -> {
+                    MenuCheck("All", Icons.Filled.People, filters.selectedBots == null) {
+                        onFilters(filters.copy(selectedBots = null))
+                    }
+                    botNames.forEach { (name, display) ->
+                        val on = filters.selectedBots?.contains(name) ?: true
+                        MenuCheck(display, Icons.Filled.Person, on) {
+                            val cur = filters.selectedBots ?: botNames.map { (n, _) -> n }.toSet()
+                            onFilters(filters.copy(selectedBots = if (on) cur - name else cur + name))
+                        }
+                    }
+                }
+            }
         }
     }
 }

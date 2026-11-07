@@ -206,6 +206,7 @@ fun ChatScreen(
 ) {
     LaunchedEffect(sessionId) {
         viewModel.init(sessionId, sessionTitle)
+
     }
 
     // Report screen visibility so the VM can flag turns that finish while the
@@ -242,6 +243,10 @@ fun ChatScreen(
     // v0.1.96: tool-call visibility toggle — persisted; flipped from the top
     // bar or Settings. Off hides tool-call boxes/rows (thinking + response stay).
     val settingsRepo = remember { SettingsRepository(context.applicationContext) }
+    // v0.2.10: Filters ▸ Show ▸ Unread — opening a chat marks it read.
+    LaunchedEffect(sessionId) {
+        if (sessionId.isNotBlank()) runCatching { settingsRepo.markSessionRead(sessionId) }
+    }
     val showToolCalls by settingsRepo.showToolCalls.collectAsState(initial = true)
     // v0.1.97: thinking visibility toggle — same pattern (tools + response stay).
     val showThinking by settingsRepo.showThinking.collectAsState(initial = true)
