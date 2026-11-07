@@ -43,6 +43,21 @@ import com.gravol.hermesclone.feature.system.CronScreen
 import com.gravol.hermesclone.feature.system.SkillDetailScreen
 import com.gravol.hermesclone.feature.system.SkillsScreen
 import com.gravol.hermesclone.notify.NotificationHelper
+import com.gravol.hermesclone.feature.hub.BotHubScreen
+import com.gravol.hermesclone.feature.hub.HubDefaultModelScreen
+import com.gravol.hermesclone.feature.hub.HubProjectsScreen
+import com.gravol.hermesclone.feature.hub.HubArtifactsScreen
+import com.gravol.hermesclone.feature.hub.HubMemoryScreen
+import com.gravol.hermesclone.feature.hub.HubUsageScreen
+import com.gravol.hermesclone.feature.hub.HubPluginsScreen
+import com.gravol.hermesclone.feature.hub.HubConnectionsScreen
+import com.gravol.hermesclone.feature.hub.HubToolsetsScreen
+import com.gravol.hermesclone.feature.hub.HubWebhooksScreen
+import com.gravol.hermesclone.feature.hub.HubMessagingScreen
+import com.gravol.hermesclone.feature.hub.HubVoiceScreen
+import com.gravol.hermesclone.feature.hub.HubKeysScreen
+import com.gravol.hermesclone.feature.hub.HubInstancesScreen
+import com.gravol.hermesclone.feature.hub.HubLogsScreen
 import com.gravol.hermesclone.core.network.DashboardApiClient
 import com.gravol.hermesclone.core.network.DebugLog
 import kotlinx.coroutines.MainScope
@@ -250,7 +265,7 @@ fun HermexNavGraph(chatVmsHolder: ChatVmsHolder) {
                 onSettings = {
                     navController.navigate("settings")
                 },
-                onOpenDevices = { navController.navigate("settings") },
+                onOpenDevices = { navController.navigate("bothub") },
                 activeSessions = chatVmsHolder.activeSessions,
                 viewModel = sessionsVm,
             )
@@ -309,6 +324,36 @@ fun HermexNavGraph(chatVmsHolder: ChatVmsHolder) {
                 onBack = { navController.popBackStack() },
             )
         }
+        // ── v0.2.7 Bot Hub (official Bot Screen parity) ──
+        composable("bothub") {
+            BotHubScreen(
+                onBack = { navController.popBackStack() },
+                onNavigate = { route -> navController.navigate(route) },
+            )
+        }
+        composable("hub-model") { HubDefaultModelScreen(onBack = { navController.popBackStack() }) }
+        composable("hub-projects") {
+            HubProjectsScreen(
+                onBack = { navController.popBackStack() },
+                onOpenSession = { id, title ->
+                    val enc = URLEncoder.encode(title, "UTF-8")
+                    navController.navigate("chat/$id/$enc/default") { launchSingleTop = true }
+                },
+            )
+        }
+        composable("hub-artifacts") { HubArtifactsScreen(onBack = { navController.popBackStack() }) }
+        composable("hub-memory") { HubMemoryScreen(onBack = { navController.popBackStack() }) }
+        composable("hub-usage") { HubUsageScreen(onBack = { navController.popBackStack() }) }
+        composable("hub-plugins") { HubPluginsScreen(onBack = { navController.popBackStack() }) }
+        composable("hub-connections") { HubConnectionsScreen(onBack = { navController.popBackStack() }) }
+        composable("hub-toolsets") { HubToolsetsScreen(onBack = { navController.popBackStack() }) }
+        composable("hub-webhooks") { HubWebhooksScreen(onBack = { navController.popBackStack() }) }
+        composable("hub-messaging") { HubMessagingScreen(onBack = { navController.popBackStack() }) }
+        composable("hub-voice") { HubVoiceScreen(onBack = { navController.popBackStack() }) }
+        composable("hub-keys") { HubKeysScreen(onBack = { navController.popBackStack() }) }
+        composable("hub-instances") { HubInstancesScreen(onBack = { navController.popBackStack() }) }
+        composable("hub-logs") { HubLogsScreen(onBack = { navController.popBackStack() }) }
+        composable("hub-mcp") { McpScreen(onBack = { navController.popBackStack() }) }
         composable(
             route = "chat/{sessionId}/{title}/{bot}",
             arguments = listOf(

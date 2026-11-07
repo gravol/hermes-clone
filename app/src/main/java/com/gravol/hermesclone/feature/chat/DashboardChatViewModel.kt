@@ -181,7 +181,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
     private val pendingThinkBuf = StringBuilder()
     private var pendingTokPerSec: Float? = null
     private var deltaFlushJob: Job? = null
-    private val DELTA_FLUSH_MS = 110L
+    private val DELTA_FLUSH_MS = 200L
     private val DELTA_FLUSH_CHAR_CAP = 4096
     // v0.1.82: aggregate per-batch log counters (flushDeltas emits ONE line)
     private var pendingContentDeltas = 0

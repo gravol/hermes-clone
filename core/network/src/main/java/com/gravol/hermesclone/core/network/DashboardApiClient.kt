@@ -607,6 +607,45 @@ object DashboardApiClient {
 
     // ── Authenticator: auto-relogin on 401 ──
 
+    // ── v0.2.7: generic dashboard API access for the Bot Hub screens ──
+
+    private fun authGet(path: String) =
+        Request.Builder().url("$restUrl$path").get().build()
+
+    /** GET any dashboard endpoint, raw JSON back (object or array). */
+    suspend fun apiGet(path: String): NetworkResult<kotlinx.serialization.json.JsonElement> =
+        withContext(Dispatchers.IO) {
+            try {
+                val response = httpClient.newCall(authGet(path)).execute()
+                response.handleResult(json, kotlinx.serialization.json.JsonElement.serializer())
+            } catch (e: Exception) {
+                NetworkResult.Error(e)
+            }
+        }
+
+    /** POST/PUT/DELETE with an optional JSON body string; raw JSON back. */
+    suspend fun apiSend(
+        path: String,
+        method: String,
+        bodyJson: String? = null,
+    ): NetworkResult<kotlinx.serialization.json.JsonElement> =
+        withContext(Dispatchers.IO) {
+            try {
+                val body = (bodyJson ?: "{}").toRequestBody(mediaTypeJson)
+                val builder = Request.Builder().url("$restUrl$path")
+                when (method) {
+                    "POST" -> builder.post(body)
+                    "PUT" -> builder.put(body)
+                    "DELETE" -> if (bodyJson != null) builder.delete(body) else builder.delete()
+                    else -> builder.get()
+                }
+                val response = httpClient.newCall(builder.build()).execute()
+                response.handleResult(json, kotlinx.serialization.json.JsonElement.serializer())
+            } catch (e: Exception) {
+                NetworkResult.Error(e)
+            }
+        }
+
     private class DashboardAuthenticator : Authenticator {
         override fun authenticate(route: Route?, response: Response): Request? {
             if (response.request.url.encodedPath == "/auth/password-login") {

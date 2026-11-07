@@ -848,6 +848,18 @@ class JsonRpcClient(
     suspend fun profilesList(): List<ProfileRow> =
         request<ProfileListResult>("profiles.list", emptyMap()).profiles
 
+    // ── v0.2.7: Bot Hub WS calls (raw JSON) ──
+
+    /** Raw WS request returning the result element verbatim. */
+    suspend fun requestRaw(method: String, params: Map<String, Any?> = emptyMap()): kotlinx.serialization.json.JsonElement =
+        request<kotlinx.serialization.json.JsonElement>(method, params)
+
+    suspend fun sessionArchive(sessionId: String, archived: Boolean): kotlinx.serialization.json.JsonElement =
+        requestRaw("session.archive", mapOf("session_id" to sessionId, "archived" to archived))
+
+    suspend fun sessionSetHidden(sessionId: String, hidden: Boolean): kotlinx.serialization.json.JsonElement =
+        requestRaw("session.set_hidden", mapOf("session_id" to sessionId, "hidden" to hidden))
+
     /**
      * v0.5.1: token/cost rollup for one window (DAY=1, WEEK=7, MONTH=30), computed by the gateway.
      *

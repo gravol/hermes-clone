@@ -40,6 +40,7 @@ import com.gravol.hermesclone.ui.orb.BlobAvatar
 import com.gravol.hermesclone.ui.orb.recipeFor
 import com.gravol.hermesclone.R
 import androidx.compose.ui.text.font.Font
+import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.outlined.Delete
@@ -617,6 +618,14 @@ fun ChatScreen(
     // v0.5.9: Children sheet — live delegated children of this session.
     var showChildren by remember { mutableStateOf(false) }
     var replyTarget by remember { mutableStateOf<UiMessage?>(null) }
+    // v0.2.6: STABLE per-screen callbacks. MessageBubble used to receive fresh
+    // inline lambdas every recomposition, which broke Compose's skip: every
+    // visible bubble (full Markdown subtrees) recomposed on every 9Hz stream
+    // flush. Id-based hoisted lambdas keep params referentially equal, so only
+    // the streaming bubble recomposes.
+    val onReplyById: (String) -> Unit = remember {
+        { id: String -> replyTarget = viewModel.uiState.messages.firstOrNull { it.id == id } }
+    }
 
     // ── Context details panel (WebUI): tap the ring to open a details card
     //    with tokens in/out, cost, and a compress affordance. ──
@@ -1579,11 +1588,16 @@ fun ChatScreen(
                                     ToolCallList(toolCalls = msg.toolCalls)
                                 } else if (gi.anchor) {
                                     val turnExpanded = expandedTurns[gi.key] == true
+                                    // v0.2.6: remember-per-key so the row stays
+                                    // skippable across stream flushes.
+                                    val onToggleStable = remember(gi.key) {
+                                        { expandedTurns[gi.key] = expandedTurns[gi.key] != true }
+                                    }
                                     TurnSummaryRow(
                                         toolCalls = gi.tools,
                                         streaming = gi.streaming,
                                         expanded = turnExpanded,
-                                        onToggle = { expandedTurns[gi.key] = !turnExpanded },
+                                        onToggle = onToggleStable,
                                     )
                                     if (turnExpanded) ToolCallList(toolCalls = gi.tools)
                                 }
@@ -1611,8 +1625,7 @@ fun ChatScreen(
                                 MessageBubble(
                                     message = msg,
                                     sameSender = sameSender,
-                                    onReply = { replyTarget = msg },
-                                    onToggleThinking = { viewModel.toggleThinking(msg.id) },
+                                    onReply = onReplyById,
                                 )
                             }
                         }
@@ -1658,6 +1671,26 @@ fun ChatScreen(
                     ?.count { !it.completed && it.toolName != (state.messages.lastOrNull { it.isStreaming }?.toolCalls?.lastOrNull { !it.completed }?.toolName) } ?: 0),
                 onSettingsClick = { showChatSettings = true },
                 onBack = onBack, onExecution = { showExtendedActivity = !showExtendedActivity },
+                onMenuAction = { action ->
+                    val sid = sessionId
+                    scope.launch {
+                        when (action) {
+                            "Routines" -> onNavigate("cron")
+                            "Artifacts" -> onNavigate("hub-artifacts")
+                            "Bot Screen" -> onNavigate("bothub")
+                            "Live Mode" -> onNavigate("hub-voice")
+                            "Terminal" -> onNavigate("botscreen")
+                            "Archive" -> {
+                                try { com.gravol.hermesclone.di.AppModule.provideRpcClient().sessionArchive(sid, true); onBack() }
+                                catch (e: Exception) { android.widget.Toast.makeText(context, "Archive failed: ${e.message}", android.widget.Toast.LENGTH_SHORT).show() }
+                            }
+                            "Delete" -> {
+                                try { com.gravol.hermesclone.di.AppModule.provideRpcClient().sessionDelete(sid); onBack() }
+                                catch (e: Exception) { android.widget.Toast.makeText(context, "Delete failed: ${e.message}", android.widget.Toast.LENGTH_SHORT).show() }
+                            }
+                        }
+                    }
+                },
                 modifier = Modifier.align(Alignment.TopCenter).offset(y = 6.dp))
 
             if (showChatSettings) {
@@ -1921,8 +1954,7 @@ private fun LiveThinkingTicker(text: String) {
 private fun MessageBubble(
     message: UiMessage,
     sameSender: Boolean,
-    onReply: () -> Unit,
-    onToggleThinking: () -> Unit,
+    onReply: (String) -> Unit,
 ) {
     val isUser = message.role == "user"
     val alignment = if (isUser) Alignment.End else Alignment.Start
@@ -1950,7 +1982,7 @@ private fun MessageBubble(
                 modifier = bubbleWidthModifier
                     .clip(bubbleShape)
                     .background(if (isUser) bubbleColor else Color(0xFF272740))
-                    .clickable(onClick = onReply)
+                    .clickable(onClick = { onReply(message.id) })
                     .padding(horizontal = if (isUser) 14.dp else 16.dp, vertical = if (isUser) 10.dp else 12.dp),
             ) {
             // Thinking no longer renders in the message (v0.1.65): it streams
@@ -1963,14 +1995,23 @@ private fun MessageBubble(
                 // during streaming (fixes scroll-crazy feedback loop).
                 // Override heading typography with reasonable sizes (not
                 // displayLarge ~57sp which "balloons" text in the bubble).
-                val mdContent = if (!isUser && MathTransform.looksLikeMath(message.content))
-                    MathTransform.toMarkdown(message.content).also { t ->
+                // v0.2.6: constant-cost streaming. The Markdown library re-parses
+                // and re-lays-out the WHOLE document on every flush (~9/s), and
+                // the math detector regexes the whole string — both O(answer
+                // length) per frame. While a turn streams we feed only the tail
+                // (the visible part anyway); the completed turn renders the full
+                // document exactly once, so nothing is lost.
+                val shownContent = if (!isUser && message.isStreaming && message.content.length > 2500)
+                    "…" + message.content.substring(message.content.length - 2000)
+                else message.content
+                val mdContent = if (!isUser && MathTransform.looksLikeMath(shownContent))
+                    MathTransform.toMarkdown(shownContent).also { t ->
                         android.util.Log.d(
                             "HermexMath",
-                            "transformed msg len=${message.content.length} images=${Regex("!\\[math\\]\\(latex:").findAll(t).count()}",
+                            "transformed msg len=${shownContent.length} images=${Regex("!\\[math\\]\\(latex:").findAll(t).count()}",
                         )
                     }
-                else message.content
+                else shownContent
                 val mdState = com.mikepenz.markdown.model.rememberMarkdownState(
                     content = mdContent,
                     immediate = true,
@@ -2152,7 +2193,10 @@ private fun ThoughtCard(text: String, streaming: Boolean = false) {
             }
             if (!effectiveExpanded) {
                 Text(
-                    text = text,
+                    // v0.2.6: one-line preview must NOT lay out the whole
+                    // thinking string (O(n) per recomposition). 160 chars is
+                    // far past the visible width; ellipsis does the rest.
+                    text = if (text.length > 160) text.take(160) else text,
                     style = MaterialTheme.typography.bodySmall.copy(
                         fontStyle = FontStyle.Italic,
                         lineHeight = 17.sp,
@@ -2168,21 +2212,25 @@ private fun ThoughtCard(text: String, streaming: Boolean = false) {
                 exit = shrinkVertically() + fadeOut(),
             ) {
                 if (streaming) {
-                // Live (v0.8.1): capped at ~4 lines with its own scroll that
-                // follows the tail — the box never dominates the screen.
+                // v0.2.6: CONSTANT-COST live preview. The old box fed the whole
+                // thinking string into a verticalScroll and called
+                // scrollTo(maxValue) on every flush (~9/s) — every frame paid
+                // O(total thinking) text layout: gfxinfo showed 20-30 ms
+                // main-thread frames that grew worse as thinking lengthened
+                // ("slow when you're thinking"). Now only the last ~700 chars
+                // are laid out, bottom-anchored in a fixed 96dp frame. The
+                // complete text lands in the card the moment the turn ends.
                 Spacer(Modifier.height(4.dp))
-                val liveScroll = rememberScrollState()
-                LaunchedEffect(text.length) {
-                    if (liveScroll.maxValue > 0) liveScroll.scrollTo(liveScroll.maxValue)
-                }
-                Column(
+                val liveTail = if (text.length > 700) "…" + text.substring(text.length - 700) else text
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 96.dp)
-                        .verticalScroll(liveScroll),
+                        .height(96.dp)
+                        .clip(RoundedCornerShape(8.dp)),
+                    contentAlignment = Alignment.BottomStart,
                 ) {
                     Text(
-                        text = text,
+                        text = liveTail,
                         style = MaterialTheme.typography.bodySmall.copy(
                             fontStyle = FontStyle.Italic,
                             lineHeight = 17.sp,
@@ -4166,6 +4214,7 @@ private fun DetailLine(label: String, value: String) {
 @Composable
 private fun ChatHeader(
     title: String, bot: String, onBack: () -> Unit, onExecution: () -> Unit,
+    onMenuAction: (String) -> Unit = {},
     thinking: Boolean, phase: String, tokPerSec: Float, thinkingTokPerSec: Float,
     toolName: String?, toolPreview: String?, extraTools: Int, onSettingsClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -4209,12 +4258,13 @@ private fun ChatHeader(
             DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, modifier = Modifier.width(196.dp).clip(RoundedCornerShape(20.dp)).background(Color(0xFF0C1A3C))) {
                 val items = listOf("Live Mode" to Icons.Outlined.GraphicEq, "Terminal" to Icons.Outlined.Terminal,
                     "Execution" to Icons.Outlined.Terminal, "Routines" to Icons.Outlined.Schedule,
-                    "Artifacts" to Icons.Outlined.Inventory2, "Archive" to Icons.Outlined.Archive, "Delete" to Icons.Outlined.Delete)
+                    "Artifacts" to Icons.Outlined.Inventory2, "Bot Screen" to Icons.Filled.Devices,
+                    "Archive" to Icons.Outlined.Archive, "Delete" to Icons.Outlined.Delete)
                 items.forEachIndexed { index, (label, icon) ->
-                    if (index == 5) HorizontalDivider(color = Color.White.copy(alpha = .10f), modifier = Modifier.padding(horizontal = 16.dp))
+                    if (index == 6) HorizontalDivider(color = Color.White.copy(alpha = .10f), modifier = Modifier.padding(horizontal = 16.dp))
                     DropdownMenuItem(text = { Text(label, fontSize = 17.sp, fontFamily = ChatManrope, color = if (label == "Delete") Color(0xFFFF6B6B) else Color(0xFFF2F4FA)) },
                         leadingIcon = { Icon(icon, null, tint = if (label == "Delete") Color(0xFFFF6B6B) else Color(0xFFF2F4FA), modifier = Modifier.size(20.dp)) },
-                        onClick = { expanded = false; if (label == "Execution") onExecution() }, contentPadding = PaddingValues(horizontal = 16.dp), modifier = Modifier.height(42.dp))
+                        onClick = { expanded = false; if (label == "Execution") onExecution() else onMenuAction(label) }, contentPadding = PaddingValues(horizontal = 16.dp), modifier = Modifier.height(42.dp))
                 }
             }
         }

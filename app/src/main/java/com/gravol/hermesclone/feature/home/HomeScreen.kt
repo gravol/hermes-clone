@@ -66,6 +66,7 @@ import androidx.compose.ui.window.PopupProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.StateFlow
 import com.gravol.hermesclone.R
 import com.gravol.hermesclone.core.network.SessionSummary
@@ -141,7 +142,7 @@ fun HomeScreen(
     var showMore by rememberSaveable { mutableStateOf(false) }
     var layoutMode by rememberSaveable { mutableStateOf(0) }
     var showHidden by rememberSaveable { mutableStateOf(false) }
-    var windowDays by rememberSaveable { mutableStateOf(3) }
+    var windowDays by rememberSaveable { mutableStateOf(0) }  // 0 = no window (official default)
     var sortByName by rememberSaveable { mutableStateOf(false) }
     val expand = remember { mutableStateMapOf<String, Int>() }   // key → visible children (-1 = all)
     var agentsCollapsed by rememberSaveable { mutableStateOf(false) }
@@ -150,12 +151,12 @@ fun HomeScreen(
 
     val q = query.trim()
     val windowStartSec = remember(windowDays) {
-        (System.currentTimeMillis() / 1000.0) - windowDays * 86_400.0
+        (System.currentTimeMillis() / 1000.0) - windowDays.coerceAtLeast(1) * 86_400.0
     }
     val homeVisibleLegacy = remember(state.sessions, q, windowStartSec) {
         state.sessions.filter { s ->
             val ts = s.lastActivityTs()
-            (ts == null || ts * 1000.0 >= windowStartSec * 1000.0) &&
+            (ts == null || windowDays == 0 || ts * 1000.0 >= windowStartSec * 1000.0) &&
                 (q.isEmpty() ||
                     (s.title ?: "").contains(q, ignoreCase = true) ||
                     (s.preview ?: "").contains(q, ignoreCase = true) ||
@@ -164,7 +165,9 @@ fun HomeScreen(
     }
     // ── Bot model (official): groups come from the profiles roster; each bot
     // shows its own sessions. Fallback: group loaded sessions by source.
-    val windowOk: (Double?) -> Boolean = { ts -> ts == null || ts * 1000.0 >= windowStartSec * 1000.0 }
+    val windowOk: (Double?) -> Boolean = { ts ->
+        windowDays == 0 || ts == null || ts * 1000.0 >= windowStartSec * 1000.0
+    }
     val displayGroups: List<HomeAgentGroup> = if (bots.isNotEmpty()) {
         bots.mapNotNull { b ->
             val sessions = b.sessions
@@ -197,6 +200,12 @@ fun HomeScreen(
                 sessions = sessions.sortedByDescending { it.lastActivityTs() ?: 0.0 },
             )
         }
+            .let { g ->
+                if (sortByName) g.sortedBy { it.name.lowercase() }
+                else g.sortedWith(
+                    compareByDescending<HomeAgentGroup> { it.sessions.maxOfOrNull { s -> s.lastActivityTs() ?: 0.0 } ?: it.lastTs ?: 0.0 }
+                )
+            }
     } else {
         homeVisibleLegacy
             .groupBy { agentKeyFor(it) }
@@ -276,7 +285,20 @@ fun HomeScreen(
                 if (displayGroups.isEmpty() && !state.isLoading) {
                     item { NoMatchingAgents(searching = q.isNotEmpty()) }
                 }
-                displayGroups.forEach { group ->
+                val flatSessions: List<SessionSummary>? =
+                    if (layoutMode == 1) displayGroups.flatMap { it.sessions } else null
+                if (flatSessions != null) {
+                    itemsIndexed(flatSessions, key = { _, ses -> "flat-${ses.id}" }) { _, session ->
+                        ChildRow(
+                            session = session,
+                            first = false, last = false,
+                            working = activeMap[session.id] == true || workingIds.contains(session.id),
+                            onClick = { onSessionTap(session) },
+                            onLongClick = { menuSession = session },
+                        )
+                    }
+                }
+                if (layoutMode != 1) displayGroups.forEach { group ->
                     item(key = "agent-${group.key}") {
                         AgentRow(
                             group = group,
@@ -290,7 +312,7 @@ fun HomeScreen(
                             },
                         )
                     }
-                    val shown = expand[group.key] ?: 0
+                    val shown = if (layoutMode == 2) 0 else (expand[group.key] ?: 0)
                     if (shown != 0) {
                         val visibleKids = if (shown < 0) group.sessions
                             else group.sessions.take(shown)
@@ -715,12 +737,76 @@ private fun ComposeFab(busy: Boolean, onClick: () -> Unit) {
 // ─── long-press menu (keep until the official one is captured) ───
 
 @Composable
-private fun SessionContextMenu(session: SessionSummary, onDismiss: () -> Unit) {
+private fun SessionContextMenu(
+    session: SessionSummary,
+    onDismiss: () -> Unit,
+) {
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var renaming by remember { mutableStateOf(false) }
+    var draft by remember { mutableStateOf(session.title ?: "") }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val rpc = com.gravol.hermesclone.di.AppModule.provideRpcClient()
+
+    if (renaming) {
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            containerColor = HermesSurfaceRaised,
+            title = { Text("Rename session", color = HermesTextPrimary) },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        draft, { draft = it },
+                        label = { Text("Title") }, singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = HermesTextPrimary,
+                            unfocusedTextColor = HermesTextPrimary,
+                        ),
+                    )
+                    error?.let { Text(it, color = androidx.compose.material3.MaterialTheme.colorScheme.error, fontSize = 12.sp) }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    busy = true
+                    scope.launch {
+                        runCatching { rpc.sessionTitle(session.id, draft) }
+                            .onSuccess { onDismiss() }
+                            .onFailure { error = it.message }
+                        busy = false
+                    }
+                }) { Text(if (busy) "Saving…" else "Save", color = HermesAccent) }
+            },
+            dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = HermesTextSecondary) } },
+        )
+        return
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = HermesSurfaceRaised,
         title = { Text(session.title ?: session.id, color = HermesTextPrimary, fontSize = 17.sp) },
-        text = { Text("Rename, pin and delete arrive with the official menu pass.", color = HermesTextSecondary) },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("OK", color = HermesAccent) } },
+        text = {
+            Column {
+                TextButton(onClick = { renaming = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Rename", color = HermesTextPrimary)
+                }
+                TextButton(onClick = {
+                    scope.launch { runCatching { rpc.sessionSetHidden(session.id, true) }; onDismiss() }
+                }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Hide", color = HermesTextPrimary)
+                }
+                TextButton(onClick = {
+                    scope.launch {
+                        runCatching { rpc.sessionDelete(session.id) }
+                        onDismiss()
+                    }
+                }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Delete", color = androidx.compose.material3.MaterialTheme.colorScheme.error)
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Close", color = HermesTextSecondary) } },
     )
 }
