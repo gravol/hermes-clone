@@ -25,4 +25,9 @@ data class SessionSummary(
     // hides the dot rather than fabricating a status.
     @SerialName("is_active") val isActive: Boolean? = null,
     val preview: String? = null,
+    // Server-side unread flag (official home shows the blue dot only for these).
+    val unread: Boolean? = null,
+    // The session's ORIGIN source ("cron"/"oneshot"/…) — distinct from `source`, which the
+    // home tree reuses as the agent key. Routine-started rows get the amber schedule chip.
+    val sessionSource: String? = null,
 )

@@ -320,6 +320,9 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
         val hasAvatar: Boolean,
         val lastSessionTs: Double?,
         val sessions: List<JsonRpcClient.SessionInfo>,
+        // Server total for the profile (REST `total`), the base of the official
+        // "N more sessions" count. Null when the REST page failed.
+        val totalSessions: Int? = null,
     )
 
     private val _bots = MutableStateFlow<List<BotGroup>>(emptyList())
@@ -349,16 +352,34 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
             val client = sharedRpc.takeIf { sharedWs.isConnected } ?: ensureShared() ?: return@launch
             runCatching {
                 val profiles = client.profilesList()
+                // Official parity: the home rows come from the dashboard REST list, NOT the
+                // session.list RPC — REST rows carry `unread` (the blue-dot watermark),
+                // `archived`, and the per-profile `total` behind "N more sessions". The RPC
+                // summary omits all three (verified in tui_gateway _session_row_summary).
+                suspend fun restBotSessions(profile: String): Pair<List<JsonRpcClient.SessionInfo>, Int?> {
+                    val r = com.gravol.hermesclone.core.network.DashboardApiClient.apiGet(
+                        "/api/sessions?limit=50&order=recent&profile=$profile")
+                    if (r !is com.gravol.hermesclone.core.network.NetworkResult.Success) return emptyList<JsonRpcClient.SessionInfo>() to null
+                    val obj = r.data.jsonObject
+                    val el = obj["sessions"]
+                    val list = if (el == null) emptyList() else runCatching {
+                        kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+                            .decodeFromJsonElement(
+                                kotlinx.serialization.builtins.ListSerializer(JsonRpcClient.SessionInfo.serializer()), el)
+                    }.getOrDefault(emptyList())
+                    val total = (obj["total"] as? kotlinx.serialization.json.JsonPrimitive)?.content?.toIntOrNull()
+                    // The official list never renders empty sessions (a message_count=0 row
+                    // showed as a blank line in v0.2.12's RPC-sourced list).
+                    return list.filter { (it.message_count ?: 0) > 0 } to total
+                }
                 val perBot = coroutineScope {
                     profiles.map { p ->
-                        async {
-                            p.name to runCatching { client.sessionList(limit = 50, profile = p.name) }
-                                .getOrDefault(emptyList())
-                        }
+                        async { p.name to restBotSessions(p.name) }
                     }.awaitAll().toMap()
                 }
                 val groups = profiles.map { p ->
-                    val sessions = perBot[p.name].orEmpty().sortedByDescending { it.last_activity_at ?: it.started_at ?: 0.0 }
+                    val (botSessions, botTotal) = perBot[p.name] ?: emptyList<JsonRpcClient.SessionInfo>() to null
+                    val sessions = botSessions.sortedByDescending { it.last_activity_at ?: it.started_at ?: 0.0 }
                     BotGroup(
                         name = p.name,
                         displayName = when {
@@ -370,6 +391,7 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
                         hasAvatar = p.hasAvatar,
                         lastSessionTs = sessions.firstOrNull()?.let { it.last_activity_at ?: it.started_at },
                         sessions = sessions,
+                        totalSessions = botTotal,
                     )
                 }.sortedWith(
                     compareByDescending<BotGroup> { g -> g.lastSessionTs ?: g.sessions.maxOfOrNull { it.last_activity_at ?: it.started_at ?: 0.0 } ?: 0.0 }
@@ -393,9 +415,9 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
     ) {
         val includeSub: String
             get() = when {
-                includeRoutineRuns && includeArchived -> "2 on"
-                includeRoutineRuns -> "Routine runs"
-                includeArchived -> "Archived"
+                includeRoutineRuns && includeArchived -> "+ 2 kinds"
+                includeRoutineRuns -> "+ Routine runs"
+                includeArchived -> "+ Archived"
                 else -> "None"
             }
         val agentsSub: String
@@ -413,7 +435,17 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap<String, Double>())
 
     fun markSessionRead(sessionId: String) {
-        viewModelScope.launch { settingsRepo.markSessionRead(sessionId) }
+        viewModelScope.launch {
+            settingsRepo.markSessionRead(sessionId)
+            // Official parity: unread is a SERVER watermark (PATCH /api/sessions/{id}
+            // {"unread": false} → set_session_read). Without this the dot only clears locally.
+            runCatching {
+                com.gravol.hermesclone.core.network.DashboardApiClient.apiSend(
+                    "/api/sessions/${java.net.URLEncoder.encode(sessionId, "UTF-8")}",
+                    "PATCH", "{\"unread\": false}",
+                )
+            }
+        }
     }
 
     fun setFilters(f: HomeFilters) {
@@ -423,6 +455,40 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
         // (Re)fetch the Include extras when a toggle first turns on.
         if (f.includeRoutineRuns && !old.includeRoutineRuns) loadExtras(routine = true, archived = f.includeArchived)
         else if (f.includeArchived && !old.includeArchived) loadExtras(routine = f.includeRoutineRuns, archived = true)
+    }
+
+    fun resetFilters() {
+        DebugLog.log("INFO", "SessionsVM", "resetFilters")
+        _filters.value = HomeFilters()
+    }
+
+    /** Official Include-submenu subtitles: per-kind session totals ("N sessions"). Null = unknown yet. */
+    data class IncludeCounts(val routines: Int? = null, val archived: Int? = null)
+    private val _includeCounts = MutableStateFlow(IncludeCounts())
+    val includeCounts: StateFlow<IncludeCounts> = _includeCounts.asStateFlow()
+
+    /** Sum the gateway `total` per profile for one Include kind (limit=1 — we only need the count). */
+    fun refreshIncludeCounts() {
+        viewModelScope.launch {
+            val bots = _bots.value
+            suspend fun total(query: String): Int? = coroutineScope {
+                val perBot = bots.map { g ->
+                    async {
+                        val r = com.gravol.hermesclone.core.network.DashboardApiClient.apiGet(
+                            "/api/sessions?limit=1&offset=0&profile=${g.name}&$query")
+                        ((r as? com.gravol.hermesclone.core.network.NetworkResult.Success)
+                            ?.data?.jsonObject?.get("total") as? kotlinx.serialization.json.JsonPrimitive)
+                            ?.content?.toIntOrNull()
+                    }
+                }.awaitAll()
+                if (perBot.all { it == null } && perBot.isNotEmpty()) null
+                else perBot.sumOf { it ?: 0 }
+            }
+            val routines = total("sources=cron%2Coneshot")
+            val archived = total("archived=only")
+            _includeCounts.value = IncludeCounts(routines, archived)
+            DebugLog.log("INFO", "SessionsVM", "includeCounts routines=$routines archived=$archived")
+        }
     }
 
     /** REST-fetched rows for the Include toggles, per bot name. */
@@ -479,14 +545,26 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
         if (f.includeArchived) _archivedExtras.value.forEach { (k, v) -> extras.getOrPut(k) { mutableListOf() } += v }
         val botOk = f.selectedBots?.let { sel -> groups.filter { it.name in sel } } ?: groups
         return botOk.map { g ->
-            val merged = (g.sessions + (extras[g.name] ?: emptyList()))
+            // Official parity: routine runs (source cron/oneshot) and archived rows are NOT in
+            // the base list — they appear only when the matching Include toggle is on. Proven
+            // on-device: official default Include=None shows zero schedule rows; toggling on
+            // shows them (REST extras below).
+            val base = g.sessions.filter { s ->
+                (f.includeRoutineRuns || (s.source != "cron" && s.source != "oneshot")) &&
+                    (f.includeArchived || s.archived != true)
+            }
+            val merged = (base + (extras[g.name] ?: emptyList()))
                 .distinctBy { it.id }
                 .sortedByDescending { it.last_activity_at ?: it.started_at ?: 0.0 }
             val filtered = merged.filter { s ->
                 when (f.showMode) {
                     "Working" -> s.id in working
                     "Pinned" -> s.id in pinned
-                    "Unread" -> (s.last_activity_at ?: s.started_at ?: 0.0) > (read[s.id] ?: 0.0)
+                    // Official parity: the unread dot is CLIENT-side per-device state — proven on
+                    // device: gateway last_read_at is NULL for every row here (server `unread`=false)
+                    // yet the official dots them all. Never opened on this device = unread;
+                    // otherwise active-since-last-open.
+                    "Unread" -> read[s.id]?.let { rt -> (s.last_activity_at ?: s.started_at ?: 0.0) > rt } ?: true
                     else -> true
                 }
             }
@@ -710,6 +788,8 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
             outputTokens = output_tokens ?: -1,
             lastActivityAt = last_activity_at,
             isActive = is_active,
+            unread = unread,
+            sessionSource = source,
         )
     }
 

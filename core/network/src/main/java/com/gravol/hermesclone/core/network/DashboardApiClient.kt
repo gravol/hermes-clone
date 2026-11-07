@@ -636,6 +636,7 @@ object DashboardApiClient {
                 when (method) {
                     "POST" -> builder.post(body)
                     "PUT" -> builder.put(body)
+                    "PATCH" -> builder.patch(body)
                     "DELETE" -> if (bodyJson != null) builder.delete(body) else builder.delete()
                     else -> builder.get()
                 }

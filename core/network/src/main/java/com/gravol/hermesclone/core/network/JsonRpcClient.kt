@@ -745,6 +745,13 @@ class JsonRpcClient(
         // Null on pre-feature rows; SessionSummary.lastActivityAt falls back to startedAt.
         @SerialName("last_activity_at") val last_activity_at: Double? = null,
         val is_active: Boolean? = null,
+        // Server-side flags the official home tree renders/filters on. The gateway computes
+        // `unread` from the `last_read_at` watermark (hermes_state_sessions.py session_unread);
+        // null only on gateways that predate the fields.
+        val unread: Boolean? = null,
+        @SerialName("last_read_at") val last_read_at: Double? = null,
+        val archived: Boolean? = null,
+        val pinned: Boolean? = null,
     )
 
     @Serializable

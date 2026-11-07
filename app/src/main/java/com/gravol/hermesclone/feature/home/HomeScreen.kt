@@ -31,9 +31,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Pending
 import androidx.compose.material.icons.filled.SortByAlpha
 import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.MarkChatUnread
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.Person
@@ -47,10 +49,15 @@ import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FilterList
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Inventory
 import androidx.compose.ui.draw.clip
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -121,6 +128,9 @@ private data class HomeAgentGroup(
     val description: String,
     val lastTs: Double?,
     val sessions: List<SessionSummary>,
+    // Server-side profile total (REST `total`). The official "N more sessions" number is
+    // serverTotal − visible rows (verified: 1331−15 → "1316 more sessions").
+    val total: Int? = null,
 )
 
 private const val PEEK = 5
@@ -142,6 +152,7 @@ fun HomeScreen(
     val readMap by viewModel.readTimes.collectAsStateWithLifecycle()
     val routineExtras by viewModel.routineExtras.collectAsStateWithLifecycle()
     val archivedExtras by viewModel.archivedExtras.collectAsStateWithLifecycle()
+    val includeCounts by viewModel.includeCounts.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { viewModel.loadBots() }
     LaunchedEffect(Unit) {
         while (true) {
@@ -195,11 +206,19 @@ fun HomeScreen(
                         b.displayName.contains(q, ignoreCase = true)
                 }
                 .map { info ->
+                    // Client-side unread (official parity): never opened on this device, or
+                    // active since the last open. The gateway's `unread` watermark stays NULL
+                    // for sessions no client ever marked read, yet the official dots them.
+                    val readAt = readMap[info.id]
+                    val actTs = info.last_activity_at ?: info.started_at
+                    val unreadNow = readAt?.let { (actTs ?: 0.0) > it } ?: true
                     SessionSummary(
                         id = info.id, title = info.title, source = b.name, model = info.model,
                         startedAt = info.started_at, lastActivityAt = info.last_activity_at,
                         lastActive = info.last_activity_at, preview = info.preview,
                         messageCount = info.message_count ?: 0,
+                        unread = unreadNow,
+                        sessionSource = info.source,
                     )
                 }
             // Bots with no matching sessions hide while searching; visible when idle ("say hi").
@@ -214,6 +233,7 @@ fun HomeScreen(
                         System.currentTimeMillis() / 1000.0 - it < 30 * 86_400.0
                     },
                 sessions = sessions.sortedByDescending { it.lastActivityTs() ?: 0.0 },
+                total = b.totalSessions,
             )
         }
             .let { g ->
@@ -344,8 +364,13 @@ fun HomeScreen(
                         }
                         if (group.sessions.size > shown && shown > 0) {
                             item(key = "more-${group.key}") {
+                                // Official counts "more" from the SERVER total, not the loaded page
+                                // (verified: 1316 more for a 15-row page over 1,331 sessions).
+                                val hidden = (if (homeFilters.showMode == "All")
+                                    group.total?.let { it - shown } else null)
+                                    ?: (group.sessions.size - shown)
                                 MoreSessionsRow(
-                                    hidden = group.sessions.size - shown,
+                                    hidden = hidden.coerceAtLeast(0),
                                     onClick = { expand[group.key] = -1 },
                                 )
                             }
@@ -383,12 +408,16 @@ fun HomeScreen(
             PillGroup {
                 Box {
                     PillButton(onClick = { showFilters = true }) {
+                        // Official tints the Filters icon accent-blue while filters differ from defaults.
                         Icon(Icons.Outlined.FilterList, "Filters",
-                            tint = HermesTextPrimary, modifier = Modifier.size(21.dp))
+                            tint = if (homeFilters != SessionsViewModel.HomeFilters()) HermesAccent
+                                   else HermesTextPrimary,
+                            modifier = Modifier.size(21.dp))
                     }
                     if (showFilters) FiltersMenu(
                         filters = homeFilters,
                         onOpenSub = { filterSub = it },
+                        onReset = { viewModel.resetFilters() },
                         onDismiss = { showFilters = false },
                     )
                 }
@@ -438,8 +467,10 @@ fun HomeScreen(
             FilterSubmenu(
                 which = which,
                 filters = homeFilters,
+                counts = includeCounts,
                 botNames = bots.map { it.name to it.displayName },
                 onFilters = { viewModel.setFilters(it) },
+                onRefreshCounts = { viewModel.refreshIncludeCounts() },
                 onDismiss = { filterSub = null },
             )
         }
@@ -478,11 +509,14 @@ private fun PillButton(active: Boolean = false, onClick: () -> Unit, content: @C
 private fun FiltersMenu(
     filters: SessionsViewModel.HomeFilters,
     onOpenSub: (String) -> Unit,
+    onReset: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     // v0.2.10: official Filters main popup. Submenus open as a SEPARATE
     // HomeScreen-hosted popup (FilterSubmenu) — two overlapping popups made
     // every submenu row but the first eat touches in the window below.
+    // v0.2.12: official parity — "Reset filters" row appears only when filters differ
+    // from defaults (verified on-device: absent at All/None/All, present at "+ 2 kinds").
     Popup(alignment = Alignment.TopEnd, properties = PopupProperties(focusable = true), onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
@@ -492,10 +526,66 @@ private fun FiltersMenu(
                 .background(HermesSurfaceRaised)
                 .padding(vertical = 8.dp),
         ) {
-            MenuRow("Show", filters.showMode, Icons.Filled.FolderOpen) { onOpenSub("show"); onDismiss() }
+            MenuRow("Show", filters.showMode, Icons.Filled.Chat) { onOpenSub("show"); onDismiss() }
             MenuRow("Include", filters.includeSub, Icons.Filled.Layers) { onOpenSub("include"); onDismiss() }
             MenuRow("Agents", filters.agentsSub, Icons.Filled.People) { onOpenSub("agents"); onDismiss() }
+            if (filters != SessionsViewModel.HomeFilters()) {
+                HorizontalDivider(
+                    color = HermesRail,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth()
+                        .clickable { onReset(); onDismiss() }
+                        .padding(horizontal = 16.dp, vertical = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Filled.History, null, tint = HermesTextPrimary, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(14.dp))
+                    Text("Reset filters", color = HermesTextPrimary, fontSize = 16.sp)
+                }
+            }
         }
+    }
+}
+
+/** Switch row inside the filter submenus (official Include/Agents popups use switches). */
+@Composable
+private fun MenuSwitchRow(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector?,
+    subtitle: String?,
+    checked: Boolean,
+    leading: (@Composable () -> Unit)? = null,
+    labelColor: Color = HermesTextPrimary,
+    onChecked: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable { onChecked(!checked) }
+            .padding(horizontal = 16.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (leading != null) {
+            leading(); Spacer(Modifier.width(14.dp))
+        } else if (icon != null) {
+            Icon(icon, null, tint = HermesTextPrimary, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(14.dp))
+        }
+        Column(Modifier.weight(1f)) {
+            Text(label, color = labelColor, fontSize = 16.sp)
+            if (subtitle != null) Text(subtitle, color = HermesTextSecondary, fontSize = 12.sp)
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onChecked,
+            colors = SwitchDefaults.colors(
+                checkedTrackColor = HermesAccent,
+                checkedThumbColor = Color.White,
+                uncheckedTrackColor = Color(0xFF5D5D75),
+                uncheckedThumbColor = Color.White,
+                uncheckedBorderColor = Color.Transparent,
+            ),
+        )
     }
 }
 
@@ -503,41 +593,73 @@ private fun FiltersMenu(
 private fun FilterSubmenu(
     which: String,
     filters: SessionsViewModel.HomeFilters,
+    counts: SessionsViewModel.IncludeCounts,
     botNames: List<Pair<String, String>>,
     onFilters: (SessionsViewModel.HomeFilters) -> Unit,
+    onRefreshCounts: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    // Official submenu popups carry their own header (Back arrow + title) and open
+    // lazily-fetched "N sessions" counts for the Include rows.
+    LaunchedEffect(Unit) { if (which == "include") onRefreshCounts() }
     Popup(alignment = Alignment.TopEnd, properties = PopupProperties(focusable = true), onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
                 .padding(top = 96.dp, end = 14.dp)
-                .width(280.dp)
+                .width(300.dp)
                 .verticalScroll(rememberScrollState())
                 .clip(RoundedCornerShape(18.dp))
                 .background(HermesSurfaceRaised)
-                .padding(vertical = 8.dp),
+                .padding(vertical = 8.dp, horizontal = 0.dp),
         ) {
+            Row(
+                modifier = Modifier.padding(start = 4.dp, end = 16.dp, top = 2.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = HermesTextPrimary)
+                }
+                Text(
+                    when (which) { "show" -> "Show"; "include" -> "Include"; else -> "Agents" },
+                    color = HermesTextPrimary, fontSize = 20.sp, fontWeight = FontWeight.SemiBold,
+                )
+            }
             when (which) {
-                "show" -> listOf("All", "Unread", "Working", "Pinned").forEach { m ->
-                    MenuCheck(m, Icons.Filled.Visibility, filters.showMode == m) {
-                        onFilters(filters.copy(showMode = m)); onDismiss()
+                "show" -> {
+                    val icons: Map<String, androidx.compose.ui.graphics.vector.ImageVector> = mapOf(
+                        "All" to Icons.Outlined.ChatBubbleOutline,
+                        "Unread" to Icons.Filled.MarkChatUnread,
+                        "Working" to Icons.Outlined.Bolt,
+                        "Pinned" to Icons.Outlined.PushPin,
+                    )
+                    listOf("All", "Unread", "Working", "Pinned").forEach { m ->
+                        MenuCheck(m, icons.getValue(m), filters.showMode == m) {
+                            onFilters(filters.copy(showMode = m)); onDismiss()
+                        }
                     }
                 }
                 "include" -> {
-                    MenuCheck("Routine runs", Icons.Filled.History, filters.includeRoutineRuns) {
-                        onFilters(filters.copy(includeRoutineRuns = !filters.includeRoutineRuns))
-                    }
-                    MenuCheck("Archived", Icons.Filled.Inventory2, filters.includeArchived) {
-                        onFilters(filters.copy(includeArchived = !filters.includeArchived))
-                    }
+                    MenuSwitchRow(
+                        "Routine runs", Icons.Outlined.Schedule,
+                        counts.routines?.let { "$it sessions" }, filters.includeRoutineRuns,
+                    ) { on -> onFilters(filters.copy(includeRoutineRuns = on)) }
+                    MenuSwitchRow(
+                        "Archived", Icons.Outlined.Inventory,
+                        counts.archived?.let { "$it sessions" }, filters.includeArchived,
+                    ) { on -> onFilters(filters.copy(includeArchived = on)) }
                 }
                 "agents" -> {
-                    MenuCheck("All", Icons.Filled.People, filters.selectedBots == null) {
-                        onFilters(filters.copy(selectedBots = null))
+                    MenuSwitchRow("All agents", Icons.Filled.People, null, filters.selectedBots == null) { on ->
+                        onFilters(filters.copy(selectedBots = if (on) null else emptySet()))
                     }
                     botNames.forEach { (name, display) ->
                         val on = filters.selectedBots?.contains(name) ?: true
-                        MenuCheck(display, Icons.Filled.Person, on) {
+                        MenuSwitchRow(
+                            display, null, null, on,
+                            leading = { BlobAvatar(recipe = recipeFor(name.lowercase()), size = 28.dp) },
+                            // Official colors each bot's name with its blob palette color.
+                            labelColor = recipeFor(name.lowercase()).body,
+                        ) {
                             val cur = filters.selectedBots ?: botNames.map { (n, _) -> n }.toSet()
                             onFilters(filters.copy(selectedBots = if (on) cur - name else cur + name))
                         }
@@ -704,12 +826,23 @@ private fun ChildRow(
             drawLine(color, Offset(railX, top), Offset(railX, bottom), stroke)
             if (!last || first) drawLine(color, Offset(railX, mid), Offset(dotX - 2.dp.toPx(), mid), stroke)
         }
-        if (!working) {
+        // Official parity: the blue dot marks SERVER-unread sessions only (not every row),
+        // and routine-started rows carry an amber circle-of-dots chip between the dot and
+        // the title (content-desc "Started by a schedule", sampled #FF9F0A).
+        if (!working && session.unread == true) {
             Canvas(Modifier.size(16.dp)) {
                 drawCircle(HermesAccent, radius = 3.5.dp.toPx(), center = Offset(size.width / 2, size.height / 2))
             }
         } else {
             Spacer(Modifier.width(16.dp))
+        }
+        val isRoutine = session.sessionSource == "cron" || session.sessionSource == "oneshot"
+        if (isRoutine) {
+            Icon(
+                Icons.Filled.Pending, "Started by a schedule",
+                tint = Color(0xFFFF9F0A), modifier = Modifier.size(15.dp).padding(end = 2.dp),
+            )
+            Spacer(Modifier.width(6.dp))
         }
         Text(
             session.title ?: session.id,

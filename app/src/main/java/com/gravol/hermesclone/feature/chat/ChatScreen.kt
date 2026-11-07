@@ -244,8 +244,19 @@ fun ChatScreen(
     // bar or Settings. Off hides tool-call boxes/rows (thinking + response stay).
     val settingsRepo = remember { SettingsRepository(context.applicationContext) }
     // v0.2.10: Filters ▸ Show ▸ Unread — opening a chat marks it read.
+    // v0.2.12: also on the SERVER (official parity): the gateway stamps a last_read_at
+    // watermark; the home dot comes from its `unread` flag, so the local map alone
+    // leaves the dot on every other client.
     LaunchedEffect(sessionId) {
-        if (sessionId.isNotBlank()) runCatching { settingsRepo.markSessionRead(sessionId) }
+        if (sessionId.isNotBlank()) {
+            runCatching { settingsRepo.markSessionRead(sessionId) }
+            runCatching {
+                com.gravol.hermesclone.core.network.DashboardApiClient.apiSend(
+                    "/api/sessions/${java.net.URLEncoder.encode(sessionId, "UTF-8")}",
+                    "PATCH", "{\"unread\": false}",
+                )
+            }
+        }
     }
     val showToolCalls by settingsRepo.showToolCalls.collectAsState(initial = true)
     // v0.1.97: thinking visibility toggle — same pattern (tools + response stay).
