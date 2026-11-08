@@ -155,6 +155,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
@@ -247,6 +248,14 @@ fun ChatScreen(
     // v0.2.5: composer bar height (px) — growth (multi-line draft, chips)
     // must re-pin the transcript so the stream stays visible above it.
     var composerBarH by remember { mutableStateOf(0) }
+    // v0.2.20: fold probe. The field bug (keyboard open, newest line half
+    // buried under the composer) is only distinguishable from a stale pin by
+    // measuring whether the list's bottom edge actually sits above the
+    // composer's top edge. fold = listBottomY - composerTopY; positive means
+    // the list extends UNDER the composer (buried content), and at a correct
+    // pin the newest line ends contentPadding above that bottom edge.
+    var composerTopY by remember { mutableFloatStateOf(-1f) }
+    var listBottomY by remember { mutableFloatStateOf(-1f) }
     val focusRequester = remember { FocusRequester() }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -1186,7 +1195,15 @@ fun ChatScreen(
                     stableViewportH = h
                     return@collect
                 }
-                if (stableViewportH - h < MIN_REAL_KEYBOARD_PX) return@collect
+                val shrink = stableViewportH - h
+                // v0.2.20: the old gate swallowed every shrink under
+                // MIN_REAL_KEYBOARD_PX (100px) — but the field clip measures
+                // ~one line, i.e. a SUB-keyboard shrink (IME toolbar/suggestion
+                // strip, queue-chip row, Android 17 partial resize). Content
+                // then sat below the fold until the next StreamLoop pin: the
+                // "fixes itself when the next thinking box arrives" signature.
+                // Only true animation noise (< 12px) stays filtered.
+                if (shrink < MIN_SHRINK_REPIN_PX) return@collect
                 // Big shrink in progress: debounce until the height stops
                 // moving for a beat, then act once. While the IME animates,
                 // each new emission re-arms this delay from the conflate.
@@ -1196,9 +1213,11 @@ fun ChatScreen(
                 val shrunkFrom = stableViewportH
                 stableViewportH = nowH
                 val s = viewModel.uiState
+                val fold = (listBottomY - composerTopY).takeIf { composerTopY >= 0f && listBottomY >= 0f }?.toInt()
                 if (!userScrolledUp && s.messages.isNotEmpty()) {
                     DebugLog.log("SCROLL", "ViewportShrink",
-                        "viewport lost ${shrunkFrom - nowH}px (${shrunkFrom}→$nowH, keyboard resize) -> re-pin")
+                        "viewport lost ${shrunkFrom - nowH}px (${shrunkFrom}→$nowH, keyboard resize) -> re-pin " +
+                        "fold=${fold?.let { "${it}px" } ?: "?"}")
                     autoScrollToBottom(
                         listState = listState,
                         targetIndex = s.messages.lastIndex,
@@ -1206,10 +1225,16 @@ fun ChatScreen(
                         scrollGeneration = s.scrollGeneration,
                         reason = "ViewportShrink",
                     )
+                    // Post-pin fold: >0 after a full pin means the viewport
+                    // bottom itself is under the composer (layout problem),
+                    // not the pin (scroll problem).
+                    val foldAfter = (listBottomY - composerTopY).takeIf { composerTopY >= 0f && listBottomY >= 0f }?.toInt()
+                    DebugLog.log("SCROLL", "ViewportShrink", "post-pin fold=${foldAfter?.let { "${it}px" } ?: "?"}")
                 } else {
                     DebugLog.log("SCROLL", "ViewportShrink",
                         "viewport lost ${shrunkFrom - nowH}px but skipped " +
-                        "(userScrolledUp=$userScrolledUp messages=${s.messages.size})")
+                        "(userScrolledUp=$userScrolledUp messages=${s.messages.size}) " +
+                        "fold=${fold?.let { "${it}px" } ?: "?"}")
                 }
             }
     }
@@ -1314,7 +1339,13 @@ fun ChatScreen(
                 color = Color(0xFF000022),
                 modifier = Modifier.navigationBarsPadding(),
             ) {
-                Column(Modifier.onSizeChanged { composerBarH = it.height }) {
+                // v0.2.20: also record the composer's top edge in root coords
+                // so scroll diagnostics can state whether the list bottom is
+                // above or under it (the fold).
+                Column(Modifier.onGloballyPositioned { c ->
+                    composerBarH = c.size.height
+                    composerTopY = c.positionInRoot().y
+                }) {
                     // v0.7.0: animated chip while this session has background
                     // tasks running; tap opens the Background Work sheet.
                     if (bgRunning > 0) {
@@ -1887,6 +1918,9 @@ fun ChatScreen(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
+                            .onGloballyPositioned { c ->
+                                listBottomY = c.positionInRoot().y + c.size.height
+                            }
                             .nestedScroll(remember {
                                 object : NestedScrollConnection {
                                     override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
@@ -3360,6 +3394,10 @@ private const val AT_BOTTOM_SLACK_PX = 72
 /** An IME inset below this is the keyboard's open/close animation reporting
  *  1-2px steps, not an open keyboard — it must not trigger a scroll. */
 private const val MIN_REAL_KEYBOARD_PX = 100
+// v0.2.20: floor below which a viewport shrink is treated as IME animation
+// noise; anything between this and MIN_REAL_KEYBOARD_PX used to be swallowed
+// un-repinned (the field one-line-clip bug). See ViewportShrink.
+private const val MIN_SHRINK_REPIN_PX = 12
 
 /** Bounded window the end-of-turn settle watches the finished bubble re-measure.
  *  The tail->full swap's re-layout is spread over many frames (field journal:

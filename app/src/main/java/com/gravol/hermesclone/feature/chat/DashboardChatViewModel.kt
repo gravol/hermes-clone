@@ -186,6 +186,10 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
     // v0.1.82: aggregate per-batch log counters (flushDeltas emits ONE line)
     private var pendingContentDeltas = 0
     private var pendingThinkDeltas = 0
+    // v0.2.20: flush lines fire ~4-9/s and drowned the 4000-entry ring in
+    // ~30 min, evicting the very window a field report covers. Throttle the
+    // BUFFER line to one per 3s window; the disk journal keeps every flush.
+    private var lastFlushLogMs = 0L
     // v0.1.137: was 45s (far too slow — a short turn freezes until this fires).
     // Now ~10s, and it clears immediately if a completion signal was already
     // seen for the still-streaming message (turnDoneSeen). Primary recovery is
@@ -1978,9 +1982,13 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
         pendingThinkDeltas = 0
         // v0.1.82 aggregate line (~9/s): the log describes the run — counts,
         // chars, rate — instead of drowning in ~30 per-delta lines/sec.
-        DebugLog.log("SSE", "DashboardChat",
-            "flush c=$cDel/${contentChunk.length}ch t=$tDel/${thinkChunk.length}ch" +
-            (tok?.let { " tok/s=${"%.1f".format(it)}" } ?: ""))
+        val flushNow = System.currentTimeMillis()
+        if (flushNow - lastFlushLogMs >= 3000L) {
+            lastFlushLogMs = flushNow
+            DebugLog.log("SSE", "DashboardChat",
+                "flush c=$cDel/${contentChunk.length}ch t=$tDel/${thinkChunk.length}ch" +
+                (tok?.let { " tok/s=${"%.1f".format(it)}" } ?: ""))
+        }
 
         val msgs = uiState.messages.toMutableList()
         val idx = ensureStreamingPlaceholder(msgs)

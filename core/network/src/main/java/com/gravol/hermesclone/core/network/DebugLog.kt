@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicLong
  */
 object DebugLog {
 
-    private const val MAX_ENTRIES = 4000
+    private const val MAX_ENTRIES = 8000
     private const val MAX_FILE_BYTES = 2_000_000L      // journal rotation size (release default)
     /** A3: what "do not rotate" means in practice — a ceiling high enough that no QA
      *  trial reaches it, but finite so the disk is never unbounded. */
@@ -63,7 +63,10 @@ object DebugLog {
     // means every section not explicitly excluded.
     enum class Section { CONNECTION, APP, SYSTEM }
 
-    private val activeLevels = mutableSetOf("REQ", "RESP", "SSE", "ERROR", "INFO", "STATE", "RPC", "WS")
+    // v0.2.20: SCROLL was missing from the default export levels, so every
+    // viewport/re-pin line was silently dropped from field exports — the one
+    // thing the scroll investigation needed.
+    private val activeLevels = mutableSetOf("REQ", "RESP", "SSE", "ERROR", "INFO", "STATE", "RPC", "WS", "SCROLL")
     private val activeSections = mutableMapOf(Section.CONNECTION to true, Section.APP to true, Section.SYSTEM to true)
     private var searchQuery: String? = null
 

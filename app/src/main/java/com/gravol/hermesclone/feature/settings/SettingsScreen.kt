@@ -1068,6 +1068,8 @@ private fun DebugLogFilters() {
         "INFO" to "Info", "ERROR" to "Errors",
         // v0.1.85: the story levels — session lifecycle/self-heal, RPC calls, socket.
         "STATE" to "Session & heal", "RPC" to "RPC calls", "WS" to "Socket",
+        // v0.2.20: scroll/viewport diagnostics, on by default.
+        "SCROLL" to "Scroll & viewport",
     )
 
     // v0.1.157: the filter state lives in plain (non-snapshot) mutable fields
