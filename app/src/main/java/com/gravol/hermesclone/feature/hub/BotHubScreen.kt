@@ -1,8 +1,10 @@
 package com.gravol.hermesclone.feature.hub
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -21,7 +23,36 @@ import com.gravol.hermesclone.core.network.DashboardApiClient
 import com.gravol.hermesclone.core.network.NetworkResult
 import com.gravol.hermesclone.ui.orb.BlobAvatar
 import com.gravol.hermesclone.ui.orb.recipeFor
+import com.gravol.hermesclone.ui.theme.HermesSurface
+import com.gravol.hermesclone.ui.theme.HermesSurfaceActive
+import com.gravol.hermesclone.ui.theme.HermesTextPrimary
 import kotlinx.serialization.json.*
+
+/** Home-pill styling shared with the official home bar look (BotHub bar, v0.2.13). */
+@Composable
+internal fun HubPillGroup(
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    Row(
+        modifier = modifier
+            .clip(CircleShape)
+            .background(HermesSurface)
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+    ) { content() }
+}
+
+@Composable
+internal fun HubPillButton(onClick: () -> Unit, content: @Composable () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) { content() }
+}
 
 /**
  * v0.2.7 — Bot Screen hub, official parity: avatar + bot switcher, Model/Skills
@@ -73,21 +104,31 @@ fun BotHubScreen(
 
     Scaffold(
         topBar = {
-            Column(Modifier.statusBarsPadding()) {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+            // v0.2.13 official hub bar (h03-cluster.xml): left pill [Agents chat-bubble][More cluster]
+            // identical to home; right pill [New Agent +][Settings gear]. No Back icon — system
+            // back returns home, same as official.
+            Box(
+                Modifier.fillMaxWidth().statusBarsPadding()
+                    .padding(horizontal = 10.dp, vertical = 12.dp),
+            ) {
+                HubPillGroup(Modifier.align(Alignment.CenterStart)) {
+                    HubPillButton(onClick = { onNavigate("agents") }) {
+                        Icon(Icons.Filled.Chat, "Agents",
+                            tint = HermesTextPrimary, modifier = Modifier.size(21.dp))
                     }
-                    Spacer(Modifier.weight(1f))
-                    // New Agent lives in the official; provisioning is cloud-gated here.
-                    IconButton(onClick = { onNavigate("hub-instances") }) {
-                        Icon(Icons.Filled.Add, "Instances")
+                    HubPillButton(onClick = onBack) {
+                        Icon(Icons.Filled.DeviceHub, "More",
+                            tint = HermesTextPrimary, modifier = Modifier.size(21.dp))
                     }
-                    IconButton(onClick = { onNavigate("settings") }) {
-                        Icon(Icons.Filled.Settings, "Settings")
+                }
+                HubPillGroup(Modifier.align(Alignment.CenterEnd)) {
+                    HubPillButton(onClick = { onNavigate("newagent") }) {
+                        Icon(Icons.Filled.Add, "New Agent",
+                            tint = HermesTextPrimary, modifier = Modifier.size(21.dp))
+                    }
+                    HubPillButton(onClick = { onNavigate("settings") }) {
+                        Icon(Icons.Filled.Settings, "Settings",
+                            tint = HermesTextPrimary, modifier = Modifier.size(21.dp))
                     }
                 }
             }

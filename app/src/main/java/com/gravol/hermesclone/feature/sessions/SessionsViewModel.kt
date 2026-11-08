@@ -357,20 +357,43 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
                 // `archived`, and the per-profile `total` behind "N more sessions". The RPC
                 // summary omits all three (verified in tui_gateway _session_row_summary).
                 suspend fun restBotSessions(profile: String): Pair<List<JsonRpcClient.SessionInfo>, Int?> {
+                    val app = getApplication<android.app.Application>()
+                    val cacheOn = runCatching {
+                        com.gravol.hermesclone.di.AppModule.provideDataStoreManager(app)
+                            .getBoolean(com.gravol.hermesclone.feature.settings.SettingsKeys.CACHE_CHAT_LIST)
+                            .first() ?: true
+                    }.getOrDefault(true)
+                    val cacheFile = com.gravol.hermesclone.feature.settings.HermesCache.sessionsFile(app, profile)
+                    fun parse(obj: kotlinx.serialization.json.JsonObject): Pair<List<JsonRpcClient.SessionInfo>, Int?> {
+                        val el = obj["sessions"]
+                        val list = if (el == null) emptyList() else runCatching {
+                            kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+                                .decodeFromJsonElement(
+                                    kotlinx.serialization.builtins.ListSerializer(JsonRpcClient.SessionInfo.serializer()), el)
+                        }.getOrDefault(emptyList())
+                        val total = (obj["total"] as? kotlinx.serialization.json.JsonPrimitive)?.content?.toIntOrNull()
+                        return list.filter { (it.message_count ?: 0) > 0 } to total
+                    }
                     val r = com.gravol.hermesclone.core.network.DashboardApiClient.apiGet(
                         "/api/sessions?limit=50&order=recent&profile=$profile")
-                    if (r !is com.gravol.hermesclone.core.network.NetworkResult.Success) return emptyList<JsonRpcClient.SessionInfo>() to null
-                    val obj = r.data.jsonObject
-                    val el = obj["sessions"]
-                    val list = if (el == null) emptyList() else runCatching {
-                        kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
-                            .decodeFromJsonElement(
-                                kotlinx.serialization.builtins.ListSerializer(JsonRpcClient.SessionInfo.serializer()), el)
-                    }.getOrDefault(emptyList())
-                    val total = (obj["total"] as? kotlinx.serialization.json.JsonPrimitive)?.content?.toIntOrNull()
+                    if (r !is com.gravol.hermesclone.core.network.NetworkResult.Success) {
+                        // Caching ▸ Chat List (real read path): when the network is down,
+                        // render the last snapshot so the list is there before the network
+                        // answers — the official's documented behaviour for this category.
+                        if (cacheOn && cacheFile.exists()) {
+                            val obj = runCatching {
+                                kotlinx.serialization.json.Json.parseToJsonElement(cacheFile.readText()).jsonObject
+                            }.getOrNull()
+                            if (obj != null) return parse(obj)
+                        }
+                        return emptyList<JsonRpcClient.SessionInfo>() to null
+                    }
+                    if (cacheOn) kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        runCatching { cacheFile.writeBytes(r.data.toString().toByteArray()) }
+                    }
                     // The official list never renders empty sessions (a message_count=0 row
                     // showed as a blank line in v0.2.12's RPC-sourced list).
-                    return list.filter { (it.message_count ?: 0) > 0 } to total
+                    return parse(r.data.jsonObject)
                 }
                 val perBot = coroutineScope {
                     profiles.map { p ->

@@ -1,13 +1,20 @@
 package com.gravol.hermesclone.feature.hub
 
 import android.content.Intent
+import android.net.Uri
 import androidx.core.content.FileProvider
 import java.io.File
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -16,12 +23,26 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import coil.compose.AsyncImage
 import com.gravol.hermesclone.core.network.DashboardApiClient
+import com.gravol.hermesclone.core.network.DebugLog
 import com.gravol.hermesclone.core.network.NetworkResult
 import com.gravol.hermesclone.di.AppModule
+import com.gravol.hermesclone.ui.theme.HermesBackground
+import com.gravol.hermesclone.ui.theme.HermesSurface
+import com.gravol.hermesclone.ui.theme.HermesSurfaceRaised
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
 
@@ -84,71 +105,520 @@ fun HubPluginsScreen(onBack: () -> Unit) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Connections — WS connectors.catalog / connectors.list
+// Connections — official parity. WS connectors.catalog / connectors.accounts / connectors.connect.
+//
+// Live shapes verified 2026-11-08 against tui_gateway/contracts/connectors.py and the running
+// gateway (54 catalog rows on this instance):
+//   connectors.catalog   → {"connectors":[{slug,name,description,category,logo_url}]}
+//   connectors.accounts  → {"accounts":[{connection_id,connector,status,label,alias,active,…}]}
+//   connectors.connect   → {owner:{type:"account"}, connectors:[slug]} → operation view whose
+//                          targets[] carry {name,state,connect_url}; the URL is the portal sign-in
+//                          page the official app opens in a browser tab.
+// The previous version parsed `services` / `catalog`; the real key is `connectors`, so the list
+// was always empty (blank screen). Rows are also keyed by `slug`, not `id`.
 // ─────────────────────────────────────────────────────────────
+
+private val ConnWarmWhite = Color(0xFFF4F1EB)     // official text (sampled #F4F1EB)
+private val ConnMuted = Color(0xFFABA9A5)         // official descriptions (sampled #ABA9A5)
+private val ConnChipSelected = Color(0xFF142857)  // selected category chip (sampled #142857)
+private val ConnSearchFill = Color(0xFF1D1D39)    // search field (sampled #1D1D39)
+private val ConnCard = Color(0xFF12123A)          // pending sign-in card (sampled #12123A)
+private val ConnAmber = Color(0xFFFF9F0A)         // "N connected" dot (sampled #FF9F0A)
+
+private const val ConnectionsFooter =
+    "Connect services through the Nous account signed in on this Hermes instance. " +
+        "Your agents can use them while Hermes Agent is closed."
+
+private fun openExternal(context: android.content.Context, url: String) {
+    try {
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+    } catch (_: Exception) {
+        // No browser installed — the sign-in URL stays available in the pending card.
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HubConnectionsScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
-    var services by remember { mutableStateOf<List<JsonObject>?>(null) }
-    var accounts by remember { mutableStateOf<List<JsonObject>?>(null) }
+    val ctx = LocalContext.current
+    var catalog by remember { mutableStateOf<List<JsonObject>?>(null) }
+    var accounts by remember { mutableStateOf<List<JsonObject>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
+    var actionError by remember { mutableStateOf<String?>(null) }
+    var query by remember { mutableStateOf("") }
+    var category by remember { mutableStateOf("All") }
+    var signInUrls by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var bannerDismissed by remember { mutableStateOf(false) }
+    var connecting by remember { mutableStateOf<String?>(null) }
+    var activeSlug by remember { mutableStateOf<String?>(null) }
+    var reloadTick by remember { mutableStateOf(0) }
 
-    LaunchedEffect(Unit) {
+    suspend fun readAccounts(): List<JsonObject> = try {
+        val acc = AppModule.provideRpcClient().requestRaw("connectors.accounts")
+        ((acc as? JsonObject)?.get("accounts") as? JsonArray)?.mapNotNull { it as? JsonObject }
+            ?: emptyList()
+    } catch (_: Exception) {
+        emptyList()
+    }
+
+    LaunchedEffect(reloadTick) {
+        error = null
         try {
-            val rpc = AppModule.provideRpcClient()
-            val cat = rpc.requestRaw("connectors.catalog")
-            services = when (cat) {
-                is JsonArray -> cat.map { it as JsonObject }
-                is JsonObject -> (cat["services"] as? JsonArray ?: cat["catalog"] as? JsonArray)?.map { it as JsonObject }
-                else -> null
-            } ?: emptyList()
-            try {
-                val acc = rpc.requestRaw("connectors.accounts")
-                accounts = when (acc) {
-                    is JsonArray -> acc.map { it as JsonObject }
-                    is JsonObject -> (acc["accounts"] as? JsonArray)?.map { it as JsonObject } ?: emptyList()
-                    else -> emptyList()
-                }
-            } catch (_: Exception) { accounts = emptyList() }
+            val cat = AppModule.provideRpcClient().requestRaw("connectors.catalog")
+            val rows = ((cat as? JsonObject)?.get("connectors") as? JsonArray)
+                ?.mapNotNull { it as? JsonObject }
+            catalog = rows ?: emptyList()
+            if (rows == null) error = "The gateway returned an unexpected connector catalog."
+            else if (rows.isEmpty()) error = "The gateway returned an empty connector catalog."
+            accounts = readAccounts()
+            DebugLog.log(
+                "INFO", "Connections",
+                "catalog=${rows?.size ?: -1} accounts=${accounts.size} " +
+                    "pending=${accounts.filter { it.str("status") == "pending" }.mapNotNull { it.str("connector") }}",
+            )
         } catch (e: Exception) {
-            error = e.message
+            error = e.message ?: "Connectors unavailable."
+            catalog = catalog ?: emptyList()
+        }
+    }
+
+    // The sign-in happens in the browser; refresh account state when the app comes back.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var resumedOnce by remember { mutableStateOf(false) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                if (resumedOnce) reloadTick++ else resumedOnce = true
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val rows = catalog.orEmpty()
+    val categories = remember(rows) {
+        rows.mapNotNull { it.str("category") }.distinct().sorted()
+    }
+    val pendingAccounts = accounts.filter { it.str("status") == "pending" }
+    val pendingSlugs = pendingAccounts.mapNotNull { it.str("connector") }.toSet()
+    // Official drops EVERY connector that already has an account (pending or expired alike — both
+    // verified on-device against the same gateway state); it only surfaces them via the count badge.
+    val accountSlugs = accounts.mapNotNull { it.str("connector") }.toSet()
+    // Official hides the connector it is waiting on from its category list (verified on-device) and
+    // shows the sign-in card only for an operation THIS app started (a stale pending account from a
+    // previous session shows in the count and keeps its row hidden, but renders no card — verified
+    // against the official app on the same gateway state).
+    val pendingSlug = activeSlug?.takeIf { it in pendingSlugs }
+    val pendingLabel = pendingSlug?.let { slug ->
+        rows.firstOrNull { it.str("slug") == slug }?.str("name") ?: slug
+    }
+    val showPendingCard = pendingSlug != null && !bannerDismissed
+
+    val text = query.trim().lowercase()
+    val visible = remember(rows, accounts, query, category) {
+        rows.filter { r ->
+            val cat = r.str("category").orEmpty()
+            val name = r.str("name").orEmpty()
+            val desc = r.str("description").orEmpty()
+            val slug = r.str("slug").orEmpty()
+            (category == "All" || cat == category) &&
+                (text.isEmpty() || name.lowercase().contains(text) || desc.lowercase().contains(text)) &&
+                slug !in accountSlugs
+        }
+    }
+    val sections = remember(visible) { visible.groupBy { it.str("category").orEmpty() }.toSortedMap() }
+
+    // A LazyColumn keeps its viewport anchored to the first visible key, so an item that is
+    // PREPENDED (the pending sign-in card appearing after a Connect) lands above the viewport and
+    // looks missing. Scroll to the card when it appears (official shows it at the top).
+    val listState = rememberLazyListState()
+    LaunchedEffect(showPendingCard) {
+        if (showPendingCard) listState.scrollToItem(0)
+    }
+
+    // Catalog logos are SVG (logos.composio.dev) — the app's default Coil loader has no SVG decoder.
+    val logoLoader = remember(ctx) {
+        coil.ImageLoader.Builder(ctx)
+            .components { add(coil.decode.SvgDecoder.Factory()) }
+            .build()
+    }
+
+    fun connect(slug: String) {
+        scope.launch {
+            connecting = slug
+            actionError = null
+            try {
+                val result = AppModule.provideRpcClient().requestRaw(
+                    "connectors.connect",
+                    mapOf(
+                        "owner" to buildJsonObject { put("type", JsonPrimitive("account")) },
+                        "connectors" to JsonArray(listOf(JsonPrimitive(slug))),
+                    ),
+                )
+                val target = ((result as? JsonObject)?.get("targets") as? JsonArray)
+                    ?.mapNotNull { it as? JsonObject }?.firstOrNull()
+                val url = target?.str("connect_url")
+                val state = target?.str("state")
+                if (url != null) {
+                    signInUrls = signInUrls + (slug to url)
+                    activeSlug = slug
+                    bannerDismissed = false
+                } else if (state == "failed") {
+                    actionError = target?.str("detail") ?: "Could not start sign-in."
+                }
+                accounts = readAccounts()
+                if (url != null) openExternal(ctx, url)
+            } catch (e: Exception) {
+                actionError = e.message ?: "Connector request failed."
+            } finally {
+                connecting = null
+            }
         }
     }
 
     Scaffold(
+        containerColor = HermesBackground,
         topBar = {
             TopAppBar(
-                title = { Text("Connections") },
-                navigationIcon = { IconButton(onBack.let { { it() } }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+                title = {
+                    Text(
+                        "Connections",
+                        color = ConnWarmWhite,
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBack, modifier = Modifier.padding(start = 4.dp)) {
+                        Box(
+                            Modifier.size(40.dp).clip(CircleShape).background(HermesSurface),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack, "Back",
+                                tint = ConnWarmWhite, modifier = Modifier.size(22.dp),
+                            )
+                        }
+                    }
+                },
+                actions = {
+                    if (accounts.isNotEmpty()) ConnectedBadge(accounts.size)
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = HermesBackground),
             )
         },
     ) { pad ->
-        if (error != null) {
-            Text("Connectors unavailable: ${error}", Modifier.padding(20.dp))
-            return@Scaffold
-        }
-        LazyColumn(Modifier.padding(pad).fillMaxSize()) {
-            val connected = accounts?.mapNotNull { it.str("service") ?: it.str("id") }?.toSet() ?: emptySet()
-            items(services ?: emptyList(), key = { it.str("id") ?: it.str("name") ?: "?" }) { s ->
-                val id = s.str("id") ?: s.str("name") ?: "?"
-                val on = connected.contains(id)
-                HubRow(
-                    if (on) Icons.Filled.Link else Icons.Filled.LinkOff,
-                    s.str("label") ?: s.str("name") ?: id,
-                    if (on) "Connected" else null,
-                    sub = s.str("description"),
-                    onClick = {
-                        scope.launch {
-                            try {
-                                AppModule.provideRpcClient().requestRaw("connectors.connect", mapOf("service" to id))
-                                error = null
-                            } catch (e: Exception) { error = e.message }
+        Column(Modifier.padding(pad).fillMaxSize()) {
+            ConnectionsSearchPill(query) { query = it }
+            ConnectionsCategoryChips(categories, category) { category = it }
+
+            when {
+                catalog == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = ConnWarmWhite, strokeWidth = 2.dp)
+                }
+
+                rows.isEmpty() -> ConnectionsMessage(
+                    title = "Connectors unavailable",
+                    body = error ?: "The gateway returned no connector catalog.",
+                    onRetry = { reloadTick++ },
+                )
+
+                else -> LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                    if (showPendingCard) {
+                        item("pending-card") {
+                            PendingSignInCard(
+                                label = pendingLabel.orEmpty(),
+                                canOpen = pendingSlug?.let { signInUrls[it] }?.isNotBlank() == true,
+                                onOpen = { pendingSlug?.let { signInUrls[it] }?.let { openExternal(ctx, it) } },
+                                onDismiss = { bannerDismissed = true },
+                            )
                         }
-                    },
+                    }
+                    actionError?.let { message ->
+                        item("action-error") {
+                            Text(
+                                message,
+                                color = Color(0xFFFF6B6B),
+                                fontSize = 13.sp,
+                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                            )
+                        }
+                    }
+                    sections.forEach { (sectionName, sectionRows) ->
+                        item("header-$sectionName") { ConnectionsSectionHeader(sectionName) }
+                        items(sectionRows, key = { it.str("slug") ?: it.str("name") ?: "?" }) { row ->
+                            val slug = row.str("slug").orEmpty()
+                            ConnectorRow(
+                                name = row.str("name") ?: slug,
+                                description = row.str("description").orEmpty(),
+                                logoUrl = row.str("logo_url"),
+                                busy = connecting == slug,
+                                logoLoader = logoLoader,
+                                onConnect = { connect(slug) },
+                            )
+                        }
+                    }
+                    if (visible.isEmpty()) {
+                        item("empty") {
+                            ConnectionsMessage(
+                                title = "No matching services",
+                                body = "Try another search or category.",
+                                icon = true,
+                            )
+                        }
+                    }
+                    item("footer") {
+                        Text(
+                            ConnectionsFooter,
+                            color = ConnMuted,
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp,
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 20.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConnectedBadge(count: Int) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(end = 16.dp),
+    ) {
+        Box(Modifier.size(9.dp).clip(CircleShape).background(ConnAmber))
+        Spacer(Modifier.width(7.dp))
+        Text("$count connected", color = ConnWarmWhite, fontSize = 13.sp)
+    }
+}
+
+@Composable
+private fun ConnectionsSearchPill(query: String, onQuery: (String) -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .height(48.dp)
+            .clip(CircleShape)
+            .background(ConnSearchFill),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Icon(
+            Icons.Filled.Search, null, tint = ConnMuted,
+            modifier = Modifier.padding(start = 16.dp).size(19.dp),
+        )
+        if (query.isEmpty()) {
+            Text(
+                "Search services", color = ConnMuted, fontSize = 16.sp,
+                modifier = Modifier.padding(start = 47.dp),
+            )
+        }
+        BasicTextField(
+            value = query, onValueChange = onQuery,
+            singleLine = true,
+            cursorBrush = SolidColor(ConnWarmWhite),
+            textStyle = androidx.compose.ui.text.TextStyle(color = ConnWarmWhite, fontSize = 16.sp),
+            modifier = Modifier.padding(start = 47.dp, end = 44.dp).fillMaxWidth(),
+            decorationBox = { inner -> inner() },
+        )
+        if (query.isNotEmpty()) {
+            Icon(
+                Icons.Filled.Clear, "Clear search", tint = ConnMuted,
+                modifier = Modifier.align(Alignment.CenterEnd).padding(end = 14.dp).size(19.dp)
+                    .clickable { onQuery("") },
+            )
+        }
+    }
+}
+
+@Composable
+private fun ConnectionsCategoryChips(
+    categories: List<String>,
+    selected: String,
+    onSelect: (String) -> Unit,
+) {
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items(listOf("All") + categories) { chip ->
+            val on = chip == selected
+            Box(
+                Modifier
+                    .clip(CircleShape)
+                    .background(if (on) ConnChipSelected else HermesSurface)
+                    .clickable { onSelect(chip) }
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+            ) {
+                Text(
+                    chip,
+                    color = ConnWarmWhite,
+                    fontSize = 13.sp,
+                    fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun ConnectionsSectionHeader(label: String) {
+    Text(
+        label,
+        color = ConnWarmWhite,
+        fontSize = 20.sp,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 8.dp),
+    )
+}
+
+@Composable
+private fun ConnectorRow(
+    name: String,
+    description: String,
+    logoUrl: String?,
+    busy: Boolean,
+    logoLoader: coil.ImageLoader,
+    onConnect: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 19.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier.size(38.dp).clip(RoundedCornerShape(11.dp)).background(HermesSurfaceRaised),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (!logoUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = logoUrl,
+                    imageLoader = logoLoader,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+        Spacer(Modifier.width(15.dp))
+        Column(Modifier.weight(1f)) {
+            Text(name, color = ConnWarmWhite, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+            if (description.isNotBlank()) {
+                Text(
+                    description, color = ConnMuted, fontSize = 13.sp, lineHeight = 17.sp,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        Spacer(Modifier.width(10.dp))
+        Box(
+            Modifier
+                .clip(CircleShape)
+                .background(HermesSurface)
+                .clickable(enabled = !busy, onClick = onConnect)
+                .padding(horizontal = 14.dp, vertical = 8.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (busy) {
+                CircularProgressIndicator(
+                    color = ConnWarmWhite, strokeWidth = 2.dp,
+                    modifier = Modifier.size(16.dp),
+                )
+            } else {
+                Text(
+                    "Connect",
+                    color = ConnWarmWhite, fontSize = 14.sp, fontWeight = FontWeight.Medium,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PendingSignInCard(
+    label: String,
+    canOpen: Boolean,
+    onOpen: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Surface(
+        color = ConnCard,
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.Schedule, null, tint = ConnAmber, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(9.dp))
+                Text(
+                    "Waiting for $label sign-in",
+                    color = ConnWarmWhite, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Finish signing in your browser, then return to Hermes Agent.",
+                color = ConnMuted, fontSize = 13.sp, lineHeight = 18.sp,
+            )
+            Spacer(Modifier.height(12.dp))
+            Row {
+                if (canOpen) {
+                    ConnPillButton("Open Sign-In", onOpen, icon = Icons.Filled.OpenInNew)
+                    Spacer(Modifier.width(10.dp))
+                }
+                ConnPillButton("Not Now", onDismiss)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConnPillButton(
+    label: String,
+    onClick: () -> Unit,
+    icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+) {
+    Row(
+        Modifier
+            .clip(CircleShape)
+            .background(HermesSurface)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (icon != null) {
+            Icon(icon, null, tint = ConnWarmWhite, modifier = Modifier.size(15.dp))
+            Spacer(Modifier.width(6.dp))
+        }
+        Text(label, color = ConnWarmWhite, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+    }
+}
+
+@Composable
+private fun ConnectionsMessage(
+    title: String,
+    body: String,
+    icon: Boolean = false,
+    onRetry: (() -> Unit)? = null,
+) {
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 60.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        if (icon) {
+            Icon(Icons.Filled.Link, null, tint = ConnMuted, modifier = Modifier.size(24.dp))
+            Spacer(Modifier.height(14.dp))
+        }
+        Text(title, color = ConnWarmWhite, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(8.dp))
+        Text(body, color = ConnMuted, fontSize = 13.sp)
+        if (onRetry != null) {
+            Spacer(Modifier.height(18.dp))
+            ConnPillButton("Retry", onRetry)
         }
     }
 }

@@ -37,6 +37,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.graphics.SolidColor
 import com.gravol.hermesclone.ui.orb.BlobAvatar
+import com.gravol.hermesclone.ui.orb.MascotAvatar
 import com.gravol.hermesclone.ui.orb.recipeFor
 import com.gravol.hermesclone.R
 import androidx.compose.ui.text.font.Font
@@ -1533,6 +1534,41 @@ fun ChatScreen(
                             }),
                         contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 118.dp, bottom = 16.dp),
                     ) {
+                        // Official chat empty state, measured on Pixel 8 against
+                        // official v1.0.0 (2026-11-07) at density 2.625: 48dp
+                        // mascot whose ink top sits 181.7dp from the screen top
+                        // (median over 13 frames, breathing +-1dp), title 17sp,
+                        // subtitle 12sp on a 17sp line advance (official line
+                        // advance 17.14dp; the old 19sp was 1.9dp too loose).
+                        if (state.messages.isEmpty() && !state.isStreaming) {
+                            item {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 12.5.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                ) {
+                                    MascotAvatar(size = 48.dp)
+                                    Spacer(Modifier.height(18.75.dp))
+                                    Text(
+                                        "What are we working on?",
+                                        color = Color(0xFFF2F4FA), // HermesTextPrimary
+                                        fontSize = 17.sp,
+                                        fontFamily = ChatManrope,
+                                    )
+                                    Spacer(Modifier.height(7.dp))
+                                    Text(
+                                        "Ask a question, share an idea, or give your agent something to do.",
+                                        color = Color(0xFF8A93B8), // HermesTextSecondary
+                                        fontSize = 12.sp,
+                                        lineHeight = 17.sp,
+                                        fontFamily = ChatManrope,
+                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                        modifier = Modifier.padding(horizontal = 42.dp),
+                                    )
+                                }
+                            }
+                        }
                         itemsIndexed(state.messages, key = { _, msg -> msg.id }) { index, msg ->
                             val sameSender = index > 0 && state.messages[index - 1].role == msg.role
 
@@ -1660,11 +1696,15 @@ fun ChatScreen(
         }
             // v0.2.3: official-style top scrim — transcript content fades out
             // under the floating header instead of sliding behind it.
+            // Height tuned 2026-11-07: at 170dp the fade reached ~230dp from the
+            // top (scrim starts at the edge-to-edge top, so it clears the status
+            // bar too) and dimmed the empty-state mascot, which the official keeps
+            // at 181dp full brightness. 120dp ends the fade just below the header.
             Box(
                 Modifier
                     .align(Alignment.TopCenter)
                     .fillMaxWidth()
-                    .height(170.dp)
+                    .height(120.dp)
                     .background(
                         androidx.compose.ui.graphics.Brush.verticalGradient(
                             listOf(
@@ -1676,15 +1716,20 @@ fun ChatScreen(
                     ),
                 contentAlignment = Alignment.TopCenter,
             ) {}
+            // Official holds the LAST tool caption through post-tool decode (off_toolrun.mp4:
+            // "Using terminal… 0:58" while answer text streams), so the caption falls back to
+            // the last (completed) tool call; the tok/s chip gate stays on the RUNNING tool.
+            val toolMsg = state.messages.lastOrNull { it.isStreaming }
+            val captionTool = toolMsg?.toolCalls?.let { tcs ->
+                tcs.lastOrNull { !it.completed } ?: tcs.lastOrNull()
+            }
             ChatHeader(title = state.sessionTitle, bot = botName, thinking = state.isStreaming,
                 phase = streamPhase, tokPerSec = state.liveTokPerSec ?: streamTokPerSec,
                 thinkingTokPerSec = streamThinkingTokPerSec,
-                toolName = state.messages.lastOrNull { it.isStreaming }?.toolCalls
-                    ?.lastOrNull { !it.completed }?.toolName,
-                toolPreview = state.messages.lastOrNull { it.isStreaming }?.toolCalls
-                    ?.lastOrNull { !it.completed }?.let { tc -> argsDisplay(tc.args) ?: tc.summary ?: tc.preview },
-                extraTools = (state.messages.lastOrNull { it.isStreaming }?.toolCalls
-                    ?.count { !it.completed && it.toolName != (state.messages.lastOrNull { it.isStreaming }?.toolCalls?.lastOrNull { !it.completed }?.toolName) } ?: 0),
+                toolName = captionTool?.toolName,
+                toolPreview = captionTool?.let { tc -> argsDisplay(tc.args) ?: tc.summary ?: tc.preview },
+                toolRunning = toolMsg?.toolCalls?.any { !it.completed } == true,
+                extraTools = toolMsg?.toolCalls?.count { it.toolName != captionTool?.toolName } ?: 0,
                 onSettingsClick = { showChatSettings = true },
                 onBack = onBack, onExecution = { showExtendedActivity = !showExtendedActivity },
                 onMenuAction = { action ->
@@ -4049,25 +4094,36 @@ private fun InlineClarifyCard(
 }
 
 
+// Official activity pill (frame-verified vs off_toolrun.mp4 / off_think.mp4 @30fps):
+// label = "Thinking\u2026" (💭) while reasoning, "Writing\u2026" (✏️) while answer text streams,
+// "Using <tool>: <argsPreview> + N command(s)" (⚙️) while a tool runs. Emoji icons follow the
+// official fw1 ChatActivityCaption map. The pill is otherwise STATIC (no icon/spinner animation)
+// apart from the 1s timer tick, and the timer runs continuously across phases for the whole turn
+// (0:41 thinking -> 0:45 tool, measured). After the tool completes the LAST tool caption is
+// held through post-tool decode (matches official "Using terminal… 0:58" mid-stream behaviour).
 @Composable
 private fun LiveActivityPill(phase: String, toolName: String?, toolPreview: String?, extraTools: Int) {
     var elapsed by remember { mutableIntStateOf(0) }
     LaunchedEffect(Unit) { while (true) { delay(1000); elapsed++ } }
     val time = "%d:%02d".format(elapsed / 60, elapsed % 60)
-    val label: String = if (toolName != null) {
+    val usingLabel: String? = if (toolName != null) {
         val plus = if (extraTools > 0) " + $extraTools command${if (extraTools == 1) "" else "s"}" else ""
         val prev = toolPreview?.replace('\n', ' ')?.trim().orEmpty()
         ("Using $toolName: $prev$plus").trim().trimEnd(':', ' ')
-    } else if (phase == "thinking") "Thinking\u2026" else "Answering\u2026"
+    } else null
+    val label: String = usingLabel ?: if (phase == "decode") "Writing\u2026" else "Thinking\u2026"
+    val icon: String = when {
+        usingLabel != null -> "\u2699\uFE0F"
+        label == "Writing\u2026" -> "\u270F\uFE0F"
+        else -> "\uD83D\uDCAD"
+    }
     Row(
         Modifier.padding(top = 4.dp).clip(CircleShape).background(Color(0xFF0C1A3C))
             .padding(horizontal = 10.dp, vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (toolName == null) {
-            Icon(Icons.Filled.Psychology, null, tint = Color(0xFFB9BDD0), modifier = Modifier.size(13.dp))
-            Spacer(Modifier.width(5.dp))
-        }
+        Text(icon, fontSize = 13.sp, maxLines = 1)
+        Spacer(Modifier.width(5.dp))
         Text(label, color = Color(0xFFB9BDD0), fontSize = 13.sp, fontFamily = ChatManrope,
             maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 190.dp))
         Spacer(Modifier.width(6.dp))
@@ -4232,7 +4288,8 @@ private fun ChatHeader(
     title: String, bot: String, onBack: () -> Unit, onExecution: () -> Unit,
     onMenuAction: (String) -> Unit = {},
     thinking: Boolean, phase: String, tokPerSec: Float, thinkingTokPerSec: Float,
-    toolName: String?, toolPreview: String?, extraTools: Int, onSettingsClick: () -> Unit,
+    toolName: String?, toolPreview: String?, toolRunning: Boolean, extraTools: Int,
+    onSettingsClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -4250,7 +4307,7 @@ private fun ChatHeader(
                     .background(Color(0xFF0C1A3C)).padding(horizontal = 12.dp, vertical = 4.dp),
                     color = Color(0xFFF2F4FA), fontFamily = ChatManrope, fontWeight = FontWeight.SemiBold,
                     fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (thinking && toolName == null) {
+                if (thinking && !toolRunning) {
                     Spacer(Modifier.width(6.dp))
                     val isThinking = phase == "thinking"
                     val shown = if (isThinking) thinkingTokPerSec else tokPerSec

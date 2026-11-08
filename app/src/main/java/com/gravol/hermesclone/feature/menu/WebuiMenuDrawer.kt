@@ -66,12 +66,28 @@ fun WebuiMenuDrawer(
     var query by rememberSaveable { mutableStateOf("") }
     var sourceFilter by rememberSaveable { mutableStateOf<String?>(null) }
 
+    // Chat entry was composing this panel on every open even though the drawer sits
+    // closed off-screen: the sheet holds a 340dp rail plus the 25-row session list,
+    // and its composition measured ~60 ms inside the frame that must also slide the
+    // chat in. Compose it only while the drawer is actually on screen (opening, open,
+    // or still animating closed); it composes on the frame the drawer starts moving.
+    val drawerOnScreen = drawerState.isOpen ||
+        drawerState.targetValue == DrawerValue.Open ||
+        drawerState.isAnimationRunning
+
+    // material3 1.4.0 (official parity) derives the drawer's Closed anchor from the MEASURED
+    // drawer content (-width). Leaving the slot empty therefore collapses Closed and Open to
+    // the same 0 offset, and the drawer latches open on entry. A zero-cost 340dp spacer keeps
+    // the closed anchor real without composing the rail/session list; the sheet still composes
+    // only when drawerOnScreen flips.
+    val drawerPanelWidth = 340.dp
+
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
-            ModalDrawerSheet(
+            if (drawerOnScreen) ModalDrawerSheet(
                 drawerContainerColor = Color(0xFF141425),
-                modifier = Modifier.width(340.dp),
+                modifier = Modifier.width(drawerPanelWidth),
             ) {
                 Row(modifier = Modifier.fillMaxSize()) {
                     // ── Icon rail (left) ──
@@ -189,7 +205,7 @@ fun WebuiMenuDrawer(
                         }
                     }
                 }
-            }
+            } else Spacer(Modifier.width(drawerPanelWidth))
         },
     ) { content() }
 }

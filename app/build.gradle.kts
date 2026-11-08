@@ -13,8 +13,8 @@ android {
         applicationId = "com.gravol.hermesclone"
         minSdk = 34
         targetSdk = 34
-        versionCode = 76
-        versionName = "0.2.12-clone"
+        versionCode = 80
+        versionName = "0.2.16-test"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -150,6 +150,8 @@ dependencies {
 
     // Coil
     implementation(libs.coil.compose)
+    // v0.2.13: connector catalog logos are served as SVG (logos.composio.dev) — decode them.
+    implementation("io.coil-kt:coil-svg:2.7.0")
     implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.34.0")
     implementation("com.mikepenz:multiplatform-markdown-renderer-code:0.34.0")
     // v0.5.6: LaTeX typesetting for display math (MathTransform → MathImages → image hook)

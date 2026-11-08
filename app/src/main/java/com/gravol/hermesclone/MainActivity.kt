@@ -9,6 +9,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -27,6 +32,8 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import com.gravol.hermesclone.feature.chat.ChatScreen
 import com.gravol.hermesclone.feature.chat.ChatVmsHolder
 import com.gravol.hermesclone.feature.botscreen.BotScreenScreen
@@ -45,6 +52,7 @@ import com.gravol.hermesclone.feature.system.SkillsScreen
 import com.gravol.hermesclone.notify.NotificationHelper
 import com.gravol.hermesclone.feature.hub.BotHubScreen
 import com.gravol.hermesclone.feature.hub.HubDefaultModelScreen
+import com.gravol.hermesclone.feature.hub.HubProjectDetailScreen
 import com.gravol.hermesclone.feature.hub.HubProjectsScreen
 import com.gravol.hermesclone.feature.hub.HubArtifactsScreen
 import com.gravol.hermesclone.feature.hub.HubMemoryScreen
@@ -132,7 +140,16 @@ class MainActivity : ComponentActivity() {
                     gaugeTrack = uiGaugeHex?.let { hex -> runCatching { hexToColor(hex) }.getOrNull() },
                 )
             }
-            HermexTheme(darkTheme = true, dynamicColor = false) {
+            // v0.2.13 Look & Feel: appearance mode (0=System 1=Light 2=Dark).
+            val appearanceStore = remember { com.gravol.hermesclone.di.AppModule.provideDataStoreManager(appContext) }
+            val appearanceMode by appearanceStore.getInt(com.gravol.hermesclone.feature.settings.SettingsKeys.APPEARANCE_MODE)
+                .collectAsState(initial = null)
+            val dark = when (appearanceMode ?: 0) {
+                1 -> false
+                2 -> true
+                else -> androidx.compose.foundation.isSystemInDarkTheme()
+            }
+            HermexTheme(darkTheme = dark, dynamicColor = false) {
                 val baseDensity = LocalDensity.current
                 val scaledDensity = Density(
                     density = baseDensity.density * (zoomPercent / 100f),
@@ -226,7 +243,65 @@ fun HermexNavGraph(chatVmsHolder: ChatVmsHolder) {
         }
     }
 
-    NavHost(navController = navController, startDestination = startDest) {
+    // Official host uses directional push/pop transitions; retain the system
+    // animator-off fallback rather than forcing motion for reduced-motion users.
+    val animationsEnabled = Build.VERSION.SDK_INT < 26 || android.animation.ValueAnimator.areAnimatorsEnabled()
+
+    // ── Chat-entry jank (task 04) ──
+    // A chat destination cannot draw while it composes, and its first frame costs far more
+    // than one vsync. Measured on the Pixel 8 (gfxinfo framestats + a compose-phase timer):
+    // ChatScreen's entry composition is 105-140 ms — the largest item was the CLOSED
+    // WebUI drawer composing its whole panel (62 ms), now gated off in WebuiMenuDrawer —
+    // and the transcript's first layout adds another pass. The 300 ms push runs on frame
+    // timestamps, so those blocked frames burned the animation: the clone drew 2 frames
+    // of motion where the official app draws 14 over 283 ms.
+    // The official's shape is a short stall, THEN the full move (measured: tap -> ~266-280 ms
+    // -> 283 ms of moving frames). Holding the push at progress 0 for the settle window
+    // reproduces that shape: the destination finishes its expensive first frame while it is
+    // still off-screen, and the slide then plays at 60 fps. 300 ms covers the measured
+    // tap -> settled-chat span (~250-300 ms cold, including the session.resume round trip)
+    // and still lands inside the official's own tap -> motion window.
+    val chatEntrySettleMs = 300L
+    fun isChatRoute(route: String?): Boolean = route?.startsWith("chat/") == true
+    fun chatEnter(): EnterTransition =
+        if (animationsEnabled) {
+            slideInHorizontally(tween(300, delayMillis = chatEntrySettleMs.toInt())) { it } +
+                fadeIn(tween(300, delayMillis = chatEntrySettleMs.toInt()))
+        } else {
+            fadeIn(tween(150))
+        }
+    fun chatExit(): ExitTransition =
+        if (animationsEnabled) {
+            slideOutHorizontally(tween(300, delayMillis = chatEntrySettleMs.toInt())) { -it / 4 } +
+                fadeOut(tween(300, delayMillis = chatEntrySettleMs.toInt()))
+        } else {
+            fadeOut(tween(150))
+        }
+
+    NavHost(
+        navController = navController,
+        startDestination = startDest,
+        enterTransition = {
+            if (isChatRoute(targetState.destination.route)) chatEnter()
+            else if (animationsEnabled) slideInHorizontally(tween(300)) { it } + fadeIn(tween(300))
+            else fadeIn(tween(150))
+        },
+        exitTransition = {
+            // The screen the chat covers must hold still for the same settle window,
+            // otherwise it would slide away while the chat is still composing.
+            if (isChatRoute(targetState.destination.route)) chatExit()
+            else if (animationsEnabled) slideOutHorizontally(tween(300)) { -it / 4 } + fadeOut(tween(300))
+            else fadeOut(tween(150))
+        },
+        popEnterTransition = {
+            if (animationsEnabled) slideInHorizontally(tween(300)) { -it / 4 } + fadeIn(tween(300))
+            else fadeIn(tween(150))
+        },
+        popExitTransition = {
+            if (animationsEnabled) slideOutHorizontally(tween(300)) { it }
+            else fadeOut(tween(150))
+        },
+    ) {
         composable("dashboard-setup") {
             DashboardSetupScreen(
                 onDone = {
@@ -267,11 +342,19 @@ fun HermexNavGraph(chatVmsHolder: ChatVmsHolder) {
                     navController.navigate("settings")
                 },
                 onOpenDevices = { navController.navigate("bothub") },
+                onOpenAgents = { navController.navigate("agents") },
                 activeSessions = chatVmsHolder.activeSessions,
                 viewModel = sessionsVm,
             )
         }
         composable("settings") {
+            com.gravol.hermesclone.feature.settings.OfficialSettingsRoot(
+                onBack = { navController.popBackStack() },
+                onOpenDebug = { navController.navigate("settings-legacy") },
+            )
+        }
+        // Old flat settings kept only for its Debug Log tool (clone-only).
+        composable("settings-legacy") {
             SettingsScreen(
                 onBack = { navController.popBackStack() },
             )
@@ -332,9 +415,32 @@ fun HermexNavGraph(chatVmsHolder: ChatVmsHolder) {
                 onNavigate = { route -> navController.navigate(route) },
             )
         }
+        composable("newagent") {
+            com.gravol.hermesclone.feature.agents.NewAgentScreen(
+                onBack = { navController.popBackStack() },
+            )
+        }
         composable("hub-model") { HubDefaultModelScreen(onBack = { navController.popBackStack() }) }
         composable("hub-projects") {
             HubProjectsScreen(
+                onBack = { navController.popBackStack() },
+                onOpenSession = { id, title ->
+                    val enc = URLEncoder.encode(title, "UTF-8")
+                    navController.navigate("chat/$id/$enc/default") { launchSingleTop = true }
+                },
+                onOpenProject = { projectId ->
+                    navController.navigate("hub-project/" + URLEncoder.encode(projectId, "UTF-8"))
+                },
+            )
+        }
+        // Project detail is its own destination (official: chat → back returns to the project).
+        composable(
+            route = "hub-project/{projectId}",
+            arguments = listOf(navArgument("projectId") { type = NavType.StringType }),
+        ) { backStackEntry ->
+            val projectId = URLDecoder.decode(backStackEntry.arguments?.getString("projectId") ?: "", "UTF-8")
+            HubProjectDetailScreen(
+                projectId = projectId,
                 onBack = { navController.popBackStack() },
                 onOpenSession = { id, title ->
                     val enc = URLEncoder.encode(title, "UTF-8")

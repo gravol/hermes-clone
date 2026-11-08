@@ -42,7 +42,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.Devices
+import androidx.compose.material.icons.filled.DeviceHub
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FolderOpen
@@ -86,7 +86,7 @@ import com.gravol.hermesclone.R
 import com.gravol.hermesclone.core.network.SessionSummary
 import com.gravol.hermesclone.feature.sessions.SessionsViewModel
 import com.gravol.hermesclone.ui.orb.BlobAvatar
-import com.gravol.hermesclone.ui.orb.FurBlob
+import com.gravol.hermesclone.ui.orb.MascotAvatar
 import com.gravol.hermesclone.ui.orb.recipeFor
 import com.gravol.hermesclone.ui.theme.*
 import java.text.DateFormat
@@ -140,6 +140,7 @@ fun HomeScreen(
     onSessionTap: (SessionSummary) -> Unit = {},
     onSettings: () -> Unit = {},
     onOpenDevices: () -> Unit = {},
+    onOpenAgents: () -> Unit = {},
     activeSessions: StateFlow<Map<String, Boolean>> = MutableStateFlow(emptyMap()),
     viewModel: SessionsViewModel = viewModel(),
 ) {
@@ -300,7 +301,10 @@ fun HomeScreen(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(top = 112.dp, bottom = 96.dp),
         ) {
-            item {
+            // Official hides the "Agents" heading while a search returns nothing:
+            // mb_fu's first content is the mascot at 135dp, no header row.
+            val searchingEmpty = q.isNotEmpty() && displayGroups.isEmpty() && !state.isLoading
+            if (!searchingEmpty) item {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -389,12 +393,14 @@ fun HomeScreen(
             horizontalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             PillGroup {
-                PillButton(active = true, onClick = {}) {
-                    Icon(Icons.Filled.Chat, "Chats",
+                PillButton(onClick = onOpenAgents) {
+                    Icon(Icons.Filled.Chat, "Agents",
                         tint = HermesTextPrimary, modifier = Modifier.size(21.dp))
                 }
+                // Official home left pill second icon is the bot-cluster glyph (a11y "More")
+                // and opens the Bot Screen hub — was a phone-inventory "Devices" glyph before.
                 PillButton(onClick = onOpenDevices) {
-                    Icon(Icons.Filled.Devices, "Devices",
+                    Icon(Icons.Filled.DeviceHub, "More",
                         tint = HermesTextPrimary, modifier = Modifier.size(21.dp))
                 }
             }
@@ -888,17 +894,21 @@ private fun MoreSessionsRow(hidden: Int, onClick: () -> Unit) {
 @Composable
 private fun NoMatchingAgents(searching: Boolean) {
     Column(
-        modifier = Modifier.fillMaxWidth().padding(top = 120.dp),
+        // Official search-empty state (mb_fu, 13 frames): mascot ink top 135.2dp
+        // from the screen top, i.e. 23dp below this LazyColumn's 112dp content
+        // padding, and NO "Agents" header above it. Blob->title ink gap 26.3dp,
+        // title->subtitle ink gap 14.1dp (clone Roboto ink runs ~5dp looser).
+        modifier = Modifier.fillMaxWidth().padding(top = if (searching) 23.dp else 120.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        FurBlob(size = 110.dp, seed = 7)
-        Spacer(Modifier.height(22.dp))
+        MascotAvatar(size = 48.dp)
+        Spacer(Modifier.height(18.5.dp))
         Text(if (searching) "No matching agents" else "No agents yet",
-            color = HermesTextPrimary, fontSize = 22.sp)
-        Spacer(Modifier.height(8.dp))
+            color = HermesTextPrimary, fontSize = 17.sp)
+        Spacer(Modifier.height(if (searching) 3.dp else 5.dp))
         Text(if (searching) "Try another name, or words from a session."
              else "Say hi to your agent below.",
-            color = HermesTextSecondary, fontSize = 15.sp)
+            color = HermesTextSecondary, fontSize = 12.sp)
     }
 }
 
