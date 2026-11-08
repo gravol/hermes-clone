@@ -1,9 +1,39 @@
 package com.gravol.hermesclone.feature.chat
 
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
+
 /**
  * Shared UI data models used by both DashboardChatViewModel and ChatScreen.
  * Originally defined in ChatViewModel.kt (legacy SSE ViewModel), extracted during legacy stack cleanup.
  */
+
+/** One author's emoji reaction on a message (gateway: display_metadata.reactions). */
+data class UiReaction(val emoji: String, val author: String = "user") {
+    val isMine: Boolean get() = author == "user"
+}
+
+/** Parse the reaction list the gateway keeps in a message's display_metadata sidecar. */
+fun parseReactions(meta: JsonObject?): List<UiReaction> {
+    val arr = meta?.get("reactions") as? JsonArray ?: return emptyList()
+    return arr.mapNotNull { el ->
+        val o = el as? JsonObject ?: return@mapNotNull null
+        val emoji = o["emoji"]?.jsonPrimitive?.content ?: return@mapNotNull null
+        if (emoji.isBlank()) return@mapNotNull null
+        UiReaction(emoji = emoji, author = o["author"]?.jsonPrimitive?.content ?: "user")
+    }
+}
+
+/** Collapse reactions into (emoji, count, mine) chips, preserving first-seen order. */
+fun reactionChips(reactions: List<UiReaction>): List<Triple<String, Int, Boolean>> {
+    val order = LinkedHashMap<String, Pair<Int, Boolean>>()
+    for (r in reactions) {
+        val prev = order[r.emoji]
+        order[r.emoji] = ((prev?.first ?: 0) + 1) to ((prev?.second ?: false) || r.isMine)
+    }
+    return order.map { (emoji, v) -> Triple(emoji, v.first, v.second) }
+}
 
 data class UiMessage(
     val id: String,
@@ -22,6 +52,10 @@ data class UiMessage(
     val toolCalls: List<UiToolCall> = emptyList(),
     val usage: UiUsage? = null,
     val timestamp: Long = System.currentTimeMillis(),
+    /** Persisted messages.id — required by message.react / truncation params. */
+    val rowId: Long? = null,
+    /** Emoji reactions from display_metadata.reactions. */
+    val reactions: List<UiReaction> = emptyList(),
 )
 
 data class ThinkingSeg(val beforeToolId: String?, val text: String)

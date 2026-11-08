@@ -789,6 +789,13 @@ class JsonRpcClient(
         val reasoning_content: String? = null,  // (alias used by some models)
         val created_at: String? = null,
         val tool_calls: List<RpcNotification.ToolCallInfo>? = null,
+        // Authoring time (Unix seconds) — the official menu header prints it.
+        val timestamp: Double? = null,
+        // Durable row identity — the handle every message action addresses
+        // (reactions, branch truncation, rewind-and-resend).
+        val row_id: Long? = null,
+        // Display-only sidecar; carries {"reactions":[{emoji,author,at}]} here.
+        val display_metadata: JsonObject? = null,
     ) {
         /** Resolve message text from any known field. */
         val resolvedContent: String?
@@ -1154,11 +1161,63 @@ class JsonRpcClient(
         sessionId: String,
         text: String,
         queued: Boolean = false,
+        truncateBeforeRowId: Long? = null,
     ): PromptSubmitResult {
         val params = mutableMapOf<String, Any>("session_id" to sessionId, "text" to text)
         if (queued) params["queued"] = true
+        // Rewind-and-resend (official "Edit & resend" / "Restore & run again"):
+        // drop history before this persisted row, then append the new turn. The
+        // gateway refuses truncation params without confirm_truncate=true, and it
+        // separately refuses a truncation that would empty the transcript unless
+        // confirm_empty_truncate=true — which is exactly what rewinding the FIRST
+        // message means, and the user already confirmed by tapping the menu row.
+        if (truncateBeforeRowId != null) {
+            params["truncate_before_row_id"] = truncateBeforeRowId
+            params["confirm_truncate"] = true
+            params["confirm_empty_truncate"] = true
+        }
         return request("prompt.submit", params, timeoutMs = 120_000)
     }
+
+    /** Rewind the session's last user turn (official "Undo Last Turn"). */
+    suspend fun sessionUndo(sessionId: String, intent: String? = null): JsonObject =
+        request("session.undo", buildMap {
+            put("session_id", sessionId)
+            if (intent != null) put("intent", intent)
+        })
+
+    /**
+     * Fork a stored/live session, optionally keeping only the first [count]
+     * messages (official "Branch from here"). Returns the new session id under
+     * `session_id` plus the persisted `stored_session_id`.
+     */
+    suspend fun sessionBranch(sessionId: String, count: Int? = null, name: String? = null): JsonObject =
+        request("session.branch", buildMap {
+            put("session_id", sessionId)
+            if (count != null && count > 0) put("count", count)
+            if (!name.isNullOrBlank()) put("name", name)
+        }, timeoutMs = 60_000)
+
+    /**
+     * Set/clear one author's emoji reaction (official "Add reaction…").
+     * `emoji = null` clears. Returns `{row_id, reactions:[{emoji,author,at}]}`.
+     */
+    suspend fun messageReact(
+        sessionId: String,
+        rowId: Long?,
+        emoji: String?,
+        author: String = "user",
+        newestRole: String? = null,
+    ): JsonObject = request("message.react", buildMap {
+        put("session_id", sessionId)
+        if (rowId != null) put("row_id", rowId)
+        // A session that is live in the gateway is served from memory, where a
+        // just-finished turn has no durable row id yet; the gateway then accepts
+        // newest_role ("user"/"assistant") instead of row_id.
+        if (rowId == null && !newestRole.isNullOrBlank()) put("newest_role", newestRole)
+        put("emoji", emoji)
+        put("author", author)
+    })
 
     suspend fun sessionInterrupt(sessionId: String): JsonObject =
         request("session.interrupt", mapOf("session_id" to sessionId))

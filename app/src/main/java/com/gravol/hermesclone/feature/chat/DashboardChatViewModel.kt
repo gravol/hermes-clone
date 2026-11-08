@@ -398,7 +398,12 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                                         completed = true, completedAt = System.currentTimeMillis(),
                                     )
                                 } ?: emptyList(),
-                                timestamp = System.currentTimeMillis(),
+                                timestamp = it.timestamp?.let { ts -> (ts * 1000).toLong() }
+                                    ?: System.currentTimeMillis(),
+                                // Persisted row id + reaction sidecar — the handles
+                                // message actions (react / rewind / branch) need.
+                                rowId = it.row_id,
+                                reactions = parseReactions(it.display_metadata),
                             )
                         )
                     }
@@ -414,7 +419,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                 uiState = uiState.copy(
                     isLoading = false,
                     isStreaming = false,
-                    messages = messages,
+                    messages = backfillRowIds(messages),
                     error = null,
                     contextUsed = context.first,
                     contextMax = context.second,
@@ -1275,6 +1280,229 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                 pendingApproval = null,   // dismiss any visible approval dialog
                 pendingClarify = null,    // dismiss any visible clarify dialog
             )
+        }
+    }
+
+    // ── Message actions (official long-press menu parity, 2026-11-08) ────────
+    // The official app's long-press menu addresses persisted messages by row id:
+    // Copy/Select/Share are client-side, the rest hit the gateway
+    // (message.react / session.branch / prompt.submit truncate / session.undo).
+
+    /**
+     * Fill in missing durable row ids from the store.
+     *
+     * A session that is live in the gateway is served from its in-memory messages,
+     * and those carry no `_row_id` — only a cold resume (or `session.history`, which
+     * reads the DB with include_row_ids) does. Without the row id none of the menu's
+     * row-addressed actions (react on an older row, rewind, branch) can resolve, so
+     * after every load we join the rendered list against session.history on
+     * role + text, walking both in order so repeated texts still land correctly.
+     */
+    private suspend fun backfillRowIds(msgs: List<UiMessage>): List<UiMessage> {
+        if (msgs.none { it.rowId == null && (it.role == "user" || it.role == "assistant") }) return msgs
+        val rows = historyRows()
+        if (rows.isEmpty()) return msgs
+        val ids = alignRowIds(msgs, rows)
+        var filled = 0
+        val out = msgs.mapIndexed { i, m ->
+            val id = ids[i]
+            if (m.rowId == null && id != null) { filled++; m.copy(rowId = id) } else m
+        }
+        DebugLog.log("RPC", "MessageActions",
+            "backfill row_ids: $filled/${msgs.count { it.rowId == null }} stamped from session.history (${rows.size} rows)")
+        return out
+    }
+
+    /** (row_id, role, text) of the durable, active projection — oldest first. */
+    private suspend fun historyRows(): List<Triple<Long, String?, String?>> = runCatching {
+        val hist = rpcClient.requestRaw("session.history", mapOf("session_id" to sessionId))
+        hist.jsonObject["messages"]?.jsonArray?.mapNotNull { el ->
+            val o = el as? JsonObject ?: return@mapNotNull null
+            val id = o["row_id"]?.jsonPrimitive?.longOrNull ?: return@mapNotNull null
+            Triple(id, o["role"]?.jsonPrimitive?.contentOrNull, o["text"]?.jsonPrimitive?.contentOrNull)
+        } ?: emptyList()
+    }.getOrDefault(emptyList())
+
+    /** Row id per rendered message, joined on role + text and walked in order. */
+    private fun alignRowIds(
+        msgs: List<UiMessage>,
+        rows: List<Triple<Long, String?, String?>>,
+    ): List<Long?> {
+        var cursor = 0
+        return msgs.map { m ->
+            if (m.role != "user" && m.role != "assistant") return@map m.rowId
+            val want = m.content.trim()
+            val at = (cursor until rows.size).firstOrNull { j ->
+                rows[j].second == m.role && rows[j].third?.trim() == want
+            }
+            if (at == null) m.rowId else { cursor = at + 1; rows[at].first }
+        }
+    }
+
+    /**
+     * Resolve the durable row id for a rendered message, fetching the store when
+     * the live session served it without a stamp.
+     */
+    private suspend fun resolveRowId(messageId: String): Long? {
+        val msgs = uiState.messages
+        val idx = msgs.indexOfFirst { it.id == messageId }
+        if (idx < 0) return null
+        msgs[idx].rowId?.let { return it }
+        val rows = historyRows()
+        if (rows.isEmpty()) return null
+        return alignRowIds(msgs, rows).getOrNull(idx)
+    }
+
+    /** Set or retract this user's emoji reaction (Tapback: same emoji retracts). */
+    override fun toggleReaction(messageId: String, emoji: String) {
+        if (sessionId.isEmpty() || emoji.isBlank()) return
+        val msgs0 = uiState.messages
+        val idx0 = msgs0.indexOfFirst { it.id == messageId }
+        if (idx0 < 0) return
+        val msg = msgs0[idx0]
+        val rowId = msg.rowId
+        // Live sessions (the turn you just got) are served from the gateway's
+        // memory, so the message may have no durable row id yet. A row id is
+        // only unambiguous for the NEWEST message of a role; message.react then
+        // accepts newest_role instead (gateway: "a not-yet-persisted live message
+        // names newest_role"). Older unstamped rows must wait for a reload.
+        val newestRole = if (rowId == null &&
+            msgs0.indexOfLast { it.role == msg.role } == idx0
+        ) msg.role else null
+        if (rowId == null && newestRole == null) {
+            uiState = uiState.copy(error = "This message is not saved yet — try again in a moment.")
+            return
+        }
+        val retract = msg.reactions.any { it.isMine && it.emoji == emoji }
+        DebugLog.log("RPC", "MessageActions",
+            "message.react row=$rowId newest_role=$newestRole emoji=$emoji retract=$retract")
+        viewModelScope.launch {
+            try {
+                val res = rpcClient.messageReact(
+                    sessionId, rowId, if (retract) null else emoji, newestRole = newestRole,
+                )
+                val updated = parseReactions(
+                    JsonObject(mapOf("reactions" to (res["reactions"] ?: JsonArray(emptyList()))))
+                )
+                val msgs = uiState.messages.toMutableList()
+                val idx = msgs.indexOfFirst { it.id == messageId }
+                if (idx >= 0) {
+                    msgs[idx] = msgs[idx].copy(reactions = updated)
+                    uiState = uiState.copy(messages = msgs)
+                }
+            } catch (e: Exception) {
+                Log.e("Hermex", "message.react failed", e)
+                uiState = uiState.copy(error = e.message ?: "Reaction failed")
+            }
+        }
+    }
+
+    /** Official "Undo Last Turn": drop the last user turn server-side, then reload. */
+    override fun undoLastTurn() {
+        if (sessionId.isEmpty()) return
+        DebugLog.log("RPC", "MessageActions", "session.undo → session=$sessionId")
+        viewModelScope.launch {
+            try {
+                val res = rpcClient.sessionUndo(sessionId)
+                DebugLog.log("RPC", "MessageActions", "session.undo result=$res")
+                loadMessages()
+            } catch (e: Exception) {
+                Log.e("Hermex", "session.undo failed", e)
+                uiState = uiState.copy(error = e.message ?: "Undo failed")
+            }
+        }
+    }
+
+    /**
+     * Official "Restore & run again" (same text) and "Edit & resend" (edited text):
+     * rewind the conversation to just before [messageId] and submit [text] as the
+     * new turn. Sent as prompt.submit with truncate_before_row_id + confirm_truncate,
+     * which is the gateway's documented rewind-and-append path.
+     */
+    override fun rewindAndResubmit(messageId: String, text: String) {
+        if (sessionId.isEmpty() || text.isBlank()) return
+        val current = uiState.messages
+        val idx = current.indexOfFirst { it.id == messageId }
+        if (idx < 0) return
+        val target = current[idx]
+        if (target.role != "user") return
+        val trimmed = text.trim()
+        markInFlight(sessionId)
+        this.turnDoneSeen = false
+        this.localTurnSubmitted = true
+        this.blankRowReloadsForCurrentTurn = 0
+        this.turnNotifPosted = false
+        val now = System.currentTimeMillis()
+        // Local mirror of the rewind: everything before the target, then the new turn.
+        val next = current.take(idx).toMutableList()
+        next.add(UiMessage(id = "user_${tempIdCounter.incrementAndGet()}", role = "user", content = trimmed, timestamp = now))
+        next.add(UiMessage(
+            id = "asst_${tempIdCounter.incrementAndGet()}", role = "assistant",
+            isStreaming = true, isWaitingForFirstEvent = true, timestamp = now,
+        ))
+        uiState = uiState.copy(
+            messages = next, isStreaming = true, error = null,
+            scrollGeneration = uiState.scrollGeneration + 1,
+        )
+        DebugLog.log("RPC", "MessageActions",
+            "prompt.submit truncate_before_row_id=${target.rowId} text=\"${trimmed.take(40)}\"")
+        viewModelScope.launch {
+            try {
+                // A live session serves its newest turn without a durable row id;
+                // resolve it from the store so the rewind actually truncates.
+                val rowId = target.rowId ?: resolveRowId(messageId)
+                rpcClient.promptSubmit(sessionId, trimmed, truncateBeforeRowId = rowId)
+            } catch (e: Exception) {
+                Log.e("Hermex", "rewind+resubmit failed", e)
+                val msgs = uiState.messages.toMutableList()
+                val i = msgs.indexOfLast { it.role == "assistant" && it.isStreaming }
+                if (i >= 0) msgs[i] = msgs[i].copy(isStreaming = false)
+                uiState = uiState.copy(messages = msgs, isStreaming = false, error = e.message ?: "Resend failed")
+                // The optimistic rewind did not reach the gateway — pull the real
+                // transcript back so the bubble list matches the server again.
+                loadMessages()
+            }
+        }
+    }
+
+    /** Raw-history length up to and including [messageId] — the branch sheet's N. */
+    override suspend fun branchMessageCount(messageId: String): Int {
+        val rowId = resolveRowId(messageId) ?: return 0
+        return runCatching {
+            val ids = historyRows().map { it.first }
+            (ids.indexOf(rowId) + 1).coerceAtLeast(0)
+        }.getOrDefault(0)
+    }
+
+    /**
+     * Official "Branch from here": fork this session keeping everything up to and
+     * including [messageId]. The gateway's `count` is a raw-history length, so the
+     * cut point is resolved against session.history's row ids (not the rendered list).
+     */
+    override fun branchFromMessage(messageId: String, onCreated: (String) -> Unit) {
+        if (sessionId.isEmpty()) return
+        viewModelScope.launch {
+            try {
+                val count = branchMessageCount(messageId).takeIf { it > 0 }
+                DebugLog.log("RPC", "MessageActions", "session.branch count=$count session=$sessionId")
+                val res = rpcClient.sessionBranch(sessionId, count)
+                // `session_id` is the brand-new LIVE handle whose in-memory copy is
+                // empty; `stored_session_id` is the DB key the transcript was written
+                // to (and what the session list shows). Open the stored one, or the
+                // child renders a permanently empty chat.
+                val newId = res["stored_session_id"]?.jsonPrimitive?.contentOrNull
+                    ?.takeIf { it.isNotBlank() }
+                    ?: res["session_id"]?.jsonPrimitive?.contentOrNull
+                if (newId != null) {
+                    DebugLog.log("RPC", "MessageActions", "session.branch → $newId")
+                    onCreated(newId)
+                } else {
+                    uiState = uiState.copy(error = "Branch failed: no session returned")
+                }
+            } catch (e: Exception) {
+                Log.e("Hermex", "session.branch failed", e)
+                uiState = uiState.copy(error = e.message ?: "Branch failed")
+            }
         }
     }
 

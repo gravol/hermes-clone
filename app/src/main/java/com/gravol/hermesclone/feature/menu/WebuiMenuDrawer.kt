@@ -37,6 +37,7 @@ import com.gravol.hermesclone.feature.sessions.SessionsViewModel
 import com.gravol.hermesclone.core.network.SessionSummary
 import java.time.Instant
 import java.time.LocalDate
+import kotlinx.coroutines.launch
 import java.time.ZoneId
 
 /**
@@ -51,11 +52,25 @@ fun WebuiMenuDrawer(
     drawerState: DrawerState,
     onNavigate: (String) -> Unit,
     onOpenSession: (SessionSummary) -> Unit,
+    // v0.2.18: the rail's "Chat" is the way back to the chat/session lists. It used to only
+    // switch `panel`, so from a chat the tap was a no-op (or merely swapped the drawer panel)
+    // and the chat stayed on screen — Jeff: "click the menu button in main screen then click
+    // chat after it doesn't take me back to the chat/session lists".
+    onOpenChats: () -> Unit = {},
     sessionsVM: SessionsViewModel = viewModel(),
     content: @Composable () -> Unit = {},
 ) {
     val state by sessionsVM.uiState.collectAsState()
     var panel by rememberSaveable { mutableStateOf("chat") }
+    val drawerScope = rememberCoroutineScope()
+
+    // Every rail destination goes through here so the drawer is CLOSED before the host
+    // navigates. Relying on the destination change alone left drawerState Open in the saved
+    // composition: Back popped to the chat with the drawer open again.
+    fun go(route: String) {
+        drawerScope.launch { drawerState.close() }
+        onNavigate(route)
+    }
 
     // v0.1.902: opening Insights fetches the panel its own snapshot. The drawer's page is 25 rows
     // by design (it refetches on every sessions.changed); a window total built from that page is
@@ -103,7 +118,11 @@ fun WebuiMenuDrawer(
                             icon = { Icons.Outlined.ChatBubble },
                             label = "Chat",
                             selected = panel == "chat",
-                            onClick = { panel = "chat" },
+                            onClick = {
+                                panel = "chat"
+                                drawerScope.launch { drawerState.close() }
+                                onOpenChats()
+                            },
                         )
                         RailButton(
                             icon = { Icons.Outlined.Schedule },
@@ -127,19 +146,19 @@ fun WebuiMenuDrawer(
                             icon = { Icons.Outlined.Computer },
                             label = "Screen",
                             selected = false,
-                            onClick = { onNavigate("botscreen") },
+                            onClick = { go("botscreen") },
                         )
                         RailButton(
                             icon = { Icons.Outlined.Groups },
                             label = "Agents",
                             selected = false,
-                            onClick = { onNavigate("agents") },
+                            onClick = { go("agents") },
                         )
                         RailButton(
                             icon = { Icons.Outlined.Extension },
                             label = "MCP",
                             selected = false,
-                            onClick = { onNavigate("mcp") },
+                            onClick = { go("mcp") },
                         )
                         Spacer(Modifier.weight(1f))
                         RailButton(
@@ -182,14 +201,14 @@ fun WebuiMenuDrawer(
                                 title = "TASKS",
                                 subtitle = "Scheduled cron jobs — create, pause, edit, delete.",
                                 actionLabel = "Open Cron",
-                                onAction = { onNavigate("cron") },
+                                onAction = { go("cron") },
                                 onClose = { panel = "chat" },
                             )
                             "skills" -> OpenPanel(
                                 title = "SKILLS",
                                 subtitle = "Hermes skills — browse and inspect.",
                                 actionLabel = "Open Skills",
-                                onAction = { onNavigate("skills") },
+                                onAction = { go("skills") },
                                 onClose = { panel = "chat" },
                             )
                             "insights" -> InsightsPanel(
@@ -201,7 +220,7 @@ fun WebuiMenuDrawer(
                                 onWindowSelected = { days -> sessionsVM.loadWindowUsage(days) },
                                 onClose = { panel = "chat" },
                             )
-                            "settings" -> SettingsPanel(onNavigate = onNavigate)
+                            "settings" -> SettingsPanel(onNavigate = { go(it) })
                         }
                     }
                 }

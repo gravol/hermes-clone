@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -34,7 +35,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.graphics.SolidColor
 import com.gravol.hermesclone.ui.orb.BlobAvatar
 import com.gravol.hermesclone.ui.orb.MascotAvatar
@@ -127,6 +127,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
@@ -152,6 +153,8 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
@@ -192,7 +195,12 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
-private val ChatManrope = FontFamily(Font(R.font.manrope_chat_regular))
+internal val ChatManrope = FontFamily(Font(R.font.manrope_chat_regular))
+
+/** Timestamp header the official action card prints ("Nov 8, 01:23"). */
+internal fun messageTimestampLabel(ms: Long): String =
+    java.text.SimpleDateFormat("MMM d, HH:mm", java.util.Locale.getDefault())
+        .format(java.util.Date(ms))
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -204,6 +212,8 @@ fun ChatScreen(
     viewModel: ChatViewModelContract,
     onNavigate: (String) -> Unit = {},
     onOpenSession: (SessionSummary) -> Unit = {},
+    // v0.2.18: the drawer rail's "Chat" = back to the chat/session lists (Host pops to Home).
+    onOpenChats: () -> Unit = {},
 ) {
     LaunchedEffect(sessionId) {
         viewModel.init(sessionId, sessionTitle)
@@ -240,6 +250,32 @@ fun ChatScreen(
     val focusRequester = remember { FocusRequester() }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+
+    // ── Message actions (official long-press menu, v0.3.0) ──
+    // The official app opens a floating action card on long-press; every row is
+    // functional here (Copy/Select/Share client-side, the rest gateway RPCs).
+    var actionTarget by remember { mutableStateOf<MessageActionTarget?>(null) }
+    var selectSheetText by remember { mutableStateOf<String?>(null) }
+    var reactionMessageId by remember { mutableStateOf<String?>(null) }
+    var branchTarget by remember { mutableStateOf<Pair<UiMessage, Int>?>(null) }
+    var undoConfirmOpen by remember { mutableStateOf(false) }
+    var editingMessage by remember { mutableStateOf<UiMessage?>(null) }
+    val onToggleReaction: (String, String) -> Unit = remember(viewModel) {
+        { messageId, emoji -> viewModel.toggleReaction(messageId, emoji) }
+    }
+    val onAddReaction: (String) -> Unit = remember {
+        { messageId -> reactionMessageId = messageId }
+    }
+    val onMessageLongPress: (UiMessage, androidx.compose.ui.geometry.Rect) -> Unit = remember(viewModel) {
+        { message, bounds ->
+            val lastUserId = viewModel.uiState.messages.lastOrNull { it.role == "user" }?.id
+            actionTarget = MessageActionTarget(
+                message = message,
+                bounds = bounds,
+                isLastUserTurn = message.role == "user" && message.id == lastUserId,
+            )
+        }
+    }
 
     // v0.1.96: tool-call visibility toggle — persisted; flipped from the top
     // bar or Settings. Off hides tool-call boxes/rows (thinking + response stay).
@@ -616,6 +652,16 @@ fun ChatScreen(
         val text = composerText
         val imgs = pendingImages
         if (text.isBlank() && imgs.isEmpty()) return
+        val editing = editingMessage
+        if (editing != null) {
+            // Official "Edit & resend": rewind to just before the edited message
+            // and submit the new text as the next turn.
+            if (text.isNotBlank()) viewModel.rewindAndResubmit(editing.id, text)
+            editingMessage = null
+            composerText = ""
+            pendingImages = emptyList()
+            return
+        }
         if (imgs.isNotEmpty()) {
             viewModel.sendMessageWithImages(text, imgs.map { it.second })
         } else {
@@ -665,13 +711,101 @@ fun ChatScreen(
 
     // Track whether user has manually scrolled away from the bottom
     var userScrolledUp by remember { mutableStateOf(false) }
+    // v0.2.19: the last item's measured size on the previous layout emission.
+    // A SHRINKING last item moves its own bottom up the screen with no scroll
+    // involved — that is exactly what the streaming tail window does when an
+    // answer crosses 2500 chars (the bubble re-renders as "…"+last 2000 chars
+    // and gets ~390px shorter). Field 2026-11-08 (t3-away run): that shrink
+    // walked the item bottom through the slack window on transition frames and
+    // cleared userScrolledUp under a reader ~1800px up the message, so the
+    // turn-end settle then pulled them to the newest text. Growth cannot cause
+    // this (it only moves the bottom DOWN, away from the window), so only a
+    // shrink blocks the clear; a real swipe back still clears on the first
+    // frame where the bottom is in view and the size is steady or growing.
+    var prevLastItemSize by remember { mutableStateOf(-1) }
 
-    // Reset flag when user scrolls back to the bottom
-    LaunchedEffect(listState.canScrollForward) {
-        if (!listState.canScrollForward && userScrolledUp) {
-            userScrolledUp = false
-            DebugLog.log("SCROLL", "DragDetect", "userScrolledUp=false (scrolled back to bottom)")
+    // Reset the "user is reading" flag once the transcript's bottom is back in
+    // view. v0.2.18: judged from the LAST ITEM's bottom, not canScrollForward —
+    // the 16dp bottom contentPadding keeps canScrollForward true even when the
+    // newest line is already on screen, so the old check only cleared after the
+    // user dragged into the padding (following could look stuck).
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            val li = listState.layoutInfo
+            val last = li.visibleItemsInfo.lastOrNull()
+            listOf(
+                last?.index ?: -1,
+                last?.let { it.offset + it.size } ?: -1,
+                li.totalItemsCount,
+                last?.size ?: -1,
+            )
         }
+            .distinctUntilChanged()
+            .collect { v ->
+                val lastIdx = v[0]
+                val lastBottom = v[1]
+                val total = v[2]
+                val lastSize = v[3]
+                val prevSize = prevLastItemSize
+                prevLastItemSize = lastSize
+                val shrank = prevSize >= 0 && lastSize in 1 until prevSize
+                if (!userScrolledUp || lastIdx < 0 || total == 0) return@collect
+                val viewport = listState.layoutInfo.viewportEndOffset
+                // Two-sided window: the newest item's bottom must actually BE at
+                // the viewport bottom. `lastBottom >= viewport - slack` alone is
+                // true halfway up a long message (the item's bottom is far below
+                // the fold), which cleared the flag on every drag frame.
+                val inWindow = lastIdx == total - 1 && (
+                    kotlin.math.abs(lastBottom - viewport) <= AT_BOTTOM_SLACK_PX ||
+                        !listState.canScrollForward
+                    )
+                if (inWindow && !shrank) {
+                    userScrolledUp = false
+                    DebugLog.log("SCROLL", "DragDetect",
+                        "userScrolledUp=false (bottom in view: item=$lastIdx " +
+                        "bottom=$lastBottom viewport=$viewport)")
+                } else if (inWindow && shrank) {
+                    DebugLog.log("SCROLL", "DragDetect",
+                        "kept userScrolledUp: last item shrank $prevSize->$lastSize " +
+                        "(streaming tail window) bottom=$lastBottom viewport=$viewport")
+                }
+            }
+    }
+
+    // ── DIAG (scroll-jump investigation 2026-11-08) ──────────────────────────
+    // Records the viewport's exact position whenever it MOVES during a turn (or
+    // while the user is scrolled away), so a visible "jump" can be read as a
+    // signed firstVisibleItemScrollOffset delta instead of guessed from pixels.
+    // Log-only: never scrolls, never changes layout.
+    // v0.2.19: also records the last item's measured SIZE and never goes blind
+    // after the turn ends. The old gate (`isStreaming || userScrolledUp`) is
+    // exactly what hid the end-of-turn jump: at completion streaming flips false
+    // with the reader at the bottom, so the trace stopped logging precisely when
+    // the tail->full re-measure and re-anchor happen.
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            val li = listState.layoutInfo
+            val first = li.visibleItemsInfo.firstOrNull()
+            val last = li.visibleItemsInfo.lastOrNull()
+            listOf(
+                first?.index ?: -1,
+                listState.firstVisibleItemScrollOffset,
+                last?.index ?: -1,
+                last?.let { it.offset + it.size } ?: -1,
+                li.viewportSize.height,
+                last?.size ?: -1,
+            )
+        }
+            .distinctUntilChanged()
+            .collect { v ->
+                val s = viewModel.uiState
+                DebugLog.log("TRACE", "ScrollPos",
+                    "first=${v[0]} offset=${v[1]} last=${v[2]} lastBottom=${v[3]} " +
+                    "viewport=${v[4]} lastSize=${v[5]} canFwd=${listState.canScrollForward} " +
+                    "canBack=${listState.canScrollBackward} " +
+                    "streaming=${s.isStreaming} userScrolledUp=$userScrolledUp " +
+                    "msgs=${s.messages.size} lastLen=${s.messages.lastOrNull()?.content?.length ?: 0}")
+            }
     }
 
     // ─── Debug: message count tracking ───
@@ -739,6 +873,7 @@ fun ChatScreen(
         var lastFrameNanos = 0L
         val cb = object : android.view.Choreographer.FrameCallback {
             override fun doFrame(frameTimeNanos: Long) {
+                scrollDiagVsyncs.incrementAndGet()
                 if (lastFrameNanos != 0L) {
                     val skewMs = (frameTimeNanos - lastFrameNanos) / 1_000_000f
                     frames++
@@ -808,29 +943,94 @@ fun ChatScreen(
                 .collect {
                     val s = viewModel.uiState
                     if (!userScrolledUp && s.messages.isNotEmpty()) {
-                        autoScrollToBottom(
-                            listState = listState,
-                            targetIndex = s.messages.lastIndex,
-                            totalItems = s.messages.size,
-                            scrollGeneration = s.scrollGeneration,
-                            reason = "StreamLoop",
-                        )
-                        // Turn completion (v0.1.95): the finished message's final
-                        // layout (usage footer, markdown settle) lands a frame
-                        // AFTER the state write, so the snapshot key (content
-                        // length) doesn't change and no re-scroll fires — the
-                        // last line can end up behind the composer. Wait one
-                        // frame and re-scroll to the true bottom.
-                        if (!s.isStreaming) {
-                            withFrameNanos { }
-                            if (!userScrolledUp && s.messages.isNotEmpty()) {
+                        // A user drag can cancel Compose's scroll mutation. Isolate
+                        // that cancellation so it cannot kill the stream collector.
+                        kotlinx.coroutines.coroutineScope {
+                            launch {
                                 autoScrollToBottom(
                                     listState = listState,
                                     targetIndex = s.messages.lastIndex,
                                     totalItems = s.messages.size,
                                     scrollGeneration = s.scrollGeneration,
-                                    reason = "StreamEnd",
+                                    reason = "StreamLoop",
                                 )
+                            }.join()
+                        }
+                        // Turn completion (v0.2.19): the finished bubble swaps its
+                        // 2000-char streaming tail for the FULL document here
+                        // (MessageBubble shownContent), and that re-parse +
+                        // re-measure lands over MANY frames — field journal
+                        // 2026-11-08 (baseline-c, same APK): the last item's
+                        // measured bottom grew 2639 -> 2717 -> 2810 -> 2915 ->
+                        // ... -> 3452px in the ~500ms after the flip. The old
+                        // single-frame settle measured the PRE-swap layout, saw
+                        // the tail-window's "at bottom" and gave up, so the
+                        // viewport kept the old offset while the swap had just
+                        // re-anchored ~1900px of new text above it — the reader
+                        // saw the transcript jump back up and nothing ever
+                        // corrected it (the follow key is content length, which
+                        // never changes again).
+                        // Watch the finished layout until it stops moving.
+                        if (!s.isStreaming) {
+                            var lastSeenSize = -1
+                            var calmFrames = 0
+                            var settleLogged = false
+                            for (settlePass in 0 until TURN_END_SETTLE_FRAMES) {
+                                withFrameNanos { }
+                                // Never follow a reader who scrolled back, and
+                                // never fight a gesture that is in flight.
+                                if (userScrolledUp || listState.isScrollInProgress) {
+                                    DebugLog.log("SCROLL", "StreamEndSettle",
+                                        "bailed after $settlePass frames " +
+                                        "(userScrolledUp=$userScrolledUp " +
+                                        "scrollInProgress=${listState.isScrollInProgress})")
+                                    settleLogged = true
+                                    break
+                                }
+                                val settleInfo = listState.layoutInfo
+                                val settleLast = settleInfo.visibleItemsInfo.lastOrNull()
+                                    ?: break
+                                val settleSize = settleLast.size
+                                val settleBottom = settleLast.offset + settleSize
+                                val settleViewport = settleInfo.viewportEndOffset
+                                // Flush means the item's bottom is AT the fold: no
+                                // overflow (a positive overflow clips the last line
+                                // behind the composer edge — field t1 run left 34px
+                                // of "57 - The recipe called for thyme" cut off) and
+                                // no gap wider than the slack window.
+                                val flush = settleBottom <= settleViewport &&
+                                    settleBottom >= settleViewport - AT_BOTTOM_SLACK_PX
+                                calmFrames =
+                                    if (settleSize == lastSeenSize && flush) calmFrames + 1 else 0
+                                lastSeenSize = settleSize
+                                if (calmFrames >= TURN_END_SETTLE_CALM_FRAMES) {
+                                    DebugLog.log("SCROLL", "StreamEndSettle",
+                                        "settled after $settlePass frames: " +
+                                        "item[${settleLast.index}] size=$settleSize " +
+                                        "bottom=$settleBottom viewport=$settleViewport")
+                                    settleLogged = true
+                                    break
+                                }
+                                // Only touch the list when it is actually off the
+                                // bottom; a calm, flush layout logs nothing.
+                                if (!flush) {
+                                    autoScrollToBottom(
+                                        listState = listState,
+                                        targetIndex = s.messages.lastIndex,
+                                        totalItems = s.messages.size,
+                                        scrollGeneration = s.scrollGeneration,
+                                        reason = "StreamEndSettle",
+                                    )
+                                }
+                            }
+                            if (!settleLogged) {
+                                val expireInfo = listState.layoutInfo
+                                val expireLast = expireInfo.visibleItemsInfo.lastOrNull()
+                                DebugLog.log("SCROLL", "StreamEndSettle",
+                                    "window expired after $TURN_END_SETTLE_FRAMES frames: " +
+                                    "lastSize=$lastSeenSize " +
+                                    "bottom=${expireLast?.let { it.offset + it.size } ?: -1} " +
+                                    "viewport=${expireInfo.viewportSize.height}")
                             }
                         }
                     }
@@ -841,14 +1041,23 @@ fun ChatScreen(
 
     // Detect keyboard open/close for scroll.
     // Read WindowInsets.ime BEFORE Scaffold.imePadding() consumes it.
-    // Uses scrollToItem (instant) — animateScrollToItem's spring animation
-    // fights the LazyColumn layout changes from imePadding() settling.
+    // v0.2.18: two gates, both from field evidence (2026-11-08, v0.2.17-test):
+    //  - a REAL keyboard only. The IME reports 1-2px while it animates, and the
+    //    old effect scrolled on every one of those steps (four auto-scrolls in
+    //    250ms at 01:34:34.9–35.16);
+    //  - never while the reader is scrolled back. That same session shows the
+    //    effect pulling the transcript to the bottom under a reader who had
+    //    scrolled up (userScrolledUp=true at 01:34:07, cleared without a gesture
+    //    at 01:34:35.19). Scrolling away from what someone is reading is the bug.
     val density = LocalDensity.current
     val imeBottom = WindowInsets.ime.getBottom(density)
     val sysBottom = WindowInsets.systemBars.getBottom(density)
     val sysTop = WindowInsets.systemBars.getTop(density)
     val keyboardOpen = imeBottom > 0
     var wasKeyboardOpen by remember { mutableStateOf<Boolean?>(null) }
+    // Last IME height this effect acted on: the animation's 1-2px steps must not
+    // each trigger a scroll; only a real open/resize (>= 40px) does.
+    var handledImeHeight by remember { mutableStateOf(0) }
     LaunchedEffect(imeBottom) {
         val prevFirstVisible = listState.firstVisibleItemIndex
         val prevTotalItems = state.messages.size
@@ -867,8 +1076,24 @@ fun ChatScreen(
                 "viewportHeightBefore=$prevViewportHeight")
         }
 
-        // Scroll adjustment on EVERY imeBottom change while open (tracks animation)
-        if (isOpen && state.messages.isNotEmpty()) {
+        // Follow the keyboard only when it is a real keyboard (not the 1-2px
+        // blips the IME reports while animating), it actually moved, and the
+        // reader is at the bottom. Never while they have scrolled back.
+        if (isOpen) {
+            // DIAG (scroll-jump investigation): record any attempt to move a
+            // reader who had scrolled away.
+            if (userScrolledUp) {
+                DebugLog.log("SCROLL", "Keyboard",
+                    "SKIP: keyboard scroll suppressed while userScrolledUp=true " +
+                    "(ime=${imeBottom}px justOpened=$justOpened)")
+            }
+        } else {
+            handledImeHeight = 0
+        }
+        val realKeyboard = imeBottom >= MIN_REAL_KEYBOARD_PX
+        val movedEnough = kotlin.math.abs(imeBottom - handledImeHeight) >= 40
+        if (isOpen && realKeyboard && movedEnough && !userScrolledUp && state.messages.isNotEmpty()) {
+            handledImeHeight = imeBottom
             // Log scroll-relevant metrics on first open frame (transition only)
             if (justOpened) {
                 DebugLog.log("UI", "Keyboard",
@@ -949,6 +1174,7 @@ fun ChatScreen(
         drawerState = drawerState,
         onNavigate = onNavigate,
         onOpenSession = onOpenSession,
+        onOpenChats = onOpenChats,
     ) {
     if (showAttachSheet) {
         // v0.7.0: official-app style attach menu — Camera / Scan Document /
@@ -1343,6 +1569,14 @@ fun ChatScreen(
                             Text(state.currentModel?.let { shortModelName(it) } ?: "Model", color = Color(0xFFA2A4B0), fontSize = 13.sp, maxLines = 1, fontFamily = ChatManrope)
                         }
                     }
+                    // Official "EDITING EARLIER MESSAGE" bar above the composer,
+                    // shown while a message is being edited (Edit & resend).
+                    editingMessage?.let { em ->
+                        EditingMessageBar(text = em.content) {
+                            editingMessage = null
+                            composerText = ""
+                        }
+                    }
                     // v0.2.5b: ONE stable layout for all composer states (the
                     // 0.2.5 if/else branch-swap destroyed the text-field node
                     // on focus → instant unfocus → keyboard could never open).
@@ -1375,12 +1609,87 @@ fun ChatScreen(
             }
         },
     ) { padding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
-        ) {
-        Column(
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(padding),
+    ) {
+        // ── Message actions: floating card + the sheets/dialogs behind it ──
+        // (official long-press menu parity; every row is wired to a real action)
+        actionTarget?.let { target ->
+            val msg = target.message
+            MessageActionsPopup(
+                target = target,
+                timestamp = messageTimestampLabel(msg.timestamp),
+                onDismiss = { actionTarget = null },
+                onAction = { row ->
+                    when (row) {
+                        MessageActionRow.COPY -> {
+                            val cb = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            cb.setPrimaryClip(ClipData.newPlainText("Hermes message", msg.content))
+                            Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
+                        }
+                        MessageActionRow.SELECT -> selectSheetText = msg.content
+                        MessageActionRow.SHARE -> {
+                            val send = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, msg.content)
+                            }
+                            context.startActivity(Intent.createChooser(send, "Sharing text"))
+                        }
+                        MessageActionRow.REACT -> reactionMessageId = msg.id
+                        MessageActionRow.BRANCH -> {
+                            // The sheet's "Messages carried over" is the real
+                            // stored count (branch count = raw-history length).
+                            scope.launch {
+                                val n = viewModel.branchMessageCount(msg.id)
+                                branchTarget = msg to n
+                            }
+                        }
+                        MessageActionRow.EDIT_RESEND -> {
+                            editingMessage = msg
+                            composerText = msg.content
+                        }
+                        MessageActionRow.RESTORE_RUN ->
+                            viewModel.rewindAndResubmit(msg.id, msg.content)
+                        MessageActionRow.UNDO -> undoConfirmOpen = true
+                    }
+                },
+            )
+        }
+        selectSheetText?.let { text ->
+            SelectMessageSheet(text = text) { selectSheetText = null }
+        }
+        reactionMessageId?.let { id ->
+            AddReactionSheet(
+                onPick = { emoji -> viewModel.toggleReaction(id, emoji) },
+                onDismiss = { reactionMessageId = null },
+            )
+        }
+        branchTarget?.let { (msg, count) ->
+            BranchConfirmSheet(
+                isUser = msg.role == "user",
+                messageText = msg.content,
+                carriedCount = count,
+                onConfirm = {
+                    branchTarget = null
+                    viewModel.branchFromMessage(msg.id) { newId ->
+                        onOpenSession(SessionSummary(id = newId, title = "Branch"))
+                    }
+                },
+                onDismiss = { branchTarget = null },
+            )
+        }
+        if (undoConfirmOpen) {
+            UndoLastTurnDialog(
+                onConfirm = {
+                    undoConfirmOpen = false
+                    viewModel.undoLastTurn()
+                },
+                onDismiss = { undoConfirmOpen = false },
+            )
+        }
+    Column(
             modifier = Modifier.fillMaxSize(),
         ) {
             // Error banner for send failures (wrap_content height)
@@ -1678,6 +1987,9 @@ fun ChatScreen(
                                     message = msg,
                                     sameSender = sameSender,
                                     onReply = onReplyById,
+                                    onLongPress = onMessageLongPress,
+                                    onToggleReaction = onToggleReaction,
+                                    onAddReaction = onAddReaction,
                                 )
                             }
                         }
@@ -2016,7 +2328,13 @@ private fun MessageBubble(
     message: UiMessage,
     sameSender: Boolean,
     onReply: (String) -> Unit,
+    onLongPress: (UiMessage, Rect) -> Unit,
+    onToggleReaction: (String, String) -> Unit,
+    onAddReaction: (String) -> Unit,
 ) {
+    // Root-space bounds of this bubble — the actions card is anchored to them,
+    // exactly like the official menu that floats next to the pressed message.
+    var bubbleBounds by remember { mutableStateOf(Rect.Zero) }
     val isUser = message.role == "user"
     val alignment = if (isUser) Alignment.End else Alignment.Start
     // v0.6.0: assistant messages render as PLAIN text on the background
@@ -2043,7 +2361,13 @@ private fun MessageBubble(
                 modifier = bubbleWidthModifier
                     .clip(bubbleShape)
                     .background(if (isUser) bubbleColor else Color(0xFF272740))
-                    .clickable(onClick = { onReply(message.id) })
+                    .onGloballyPositioned { bubbleBounds = it.boundsInRoot() }
+                    // v0.3.0: long-press opens the official message-actions card.
+                    // A plain tap keeps the clone's existing quote-reply affordance.
+                    .combinedClickable(
+                        onClick = { onReply(message.id) },
+                        onLongClick = { onLongPress(message, bubbleBounds) },
+                    )
                     .padding(horizontal = if (isUser) 14.dp else 16.dp, vertical = if (isUser) 10.dp else 12.dp),
             ) {
             // Thinking no longer renders in the message (v0.1.65): it streams
@@ -2056,15 +2380,10 @@ private fun MessageBubble(
                 // during streaming (fixes scroll-crazy feedback loop).
                 // Override heading typography with reasonable sizes (not
                 // displayLarge ~57sp which "balloons" text in the bubble).
-                // v0.2.6: constant-cost streaming. The Markdown library re-parses
-                // and re-lays-out the WHOLE document on every flush (~9/s), and
-                // the math detector regexes the whole string — both O(answer
-                // length) per frame. While a turn streams we feed only the tail
-                // (the visible part anyway); the completed turn renders the full
-                // document exactly once, so nothing is lost.
-                val shownContent = if (!isUser && message.isStreaming && message.content.length > 2500)
-                    "…" + message.content.substring(message.content.length - 2000)
-                else message.content
+                // Keep the document's beginning stable while streaming. Replacing
+                // it with a sliding tail silently changes the text under a reader
+                // who has scrolled away, even when no scroll command is issued.
+                val shownContent = message.content
                 val mdContent = if (!isUser && MathTransform.looksLikeMath(shownContent))
                     MathTransform.toMarkdown(shownContent).also { t ->
                         android.util.Log.d(
@@ -2077,10 +2396,12 @@ private fun MessageBubble(
                     content = mdContent,
                     immediate = true,
                 )
-                // Selectable text (v0.1.93): wrap in SelectionContainer so any
-                // text — not just whole-message copy — can be selected.
-                SelectionContainer {
-                    Markdown(
+                // v0.3.0: deliberately NO message-level SelectionContainer. Compose
+                // grabs the long-press for text selection and draws the system
+                // toolbar/handles on top of the actions card. The official app only
+                // offers selection through the card's "Select" row (SelectMessageSheet),
+                // so selection lives there instead of on the bubble.
+                Markdown(
                         markdownState = mdState,
                         // v0.1.95: code block + inline code backgrounds are a
                         // themeable extra surface (library reads these via
@@ -2113,8 +2434,7 @@ private fun MessageBubble(
                             codeBlock = { CopyableCodeBlock(it, highlight = !message.isStreaming) },
                             codeFence = { CopyableCodeFence(it, highlight = !message.isStreaming) },
                         ),
-                    )
-                }
+                )
                 if (message.isStreaming) {
                     Text(
                         text = " ▌",
@@ -2161,6 +2481,16 @@ private fun MessageBubble(
 
             }
 
+        }
+
+        // Reactions — official renders pills under the bubble plus a "+"
+        // shortcut that reopens the picker.
+        if (message.reactions.isNotEmpty()) {
+            ReactionChips(
+                reactions = message.reactions,
+                onToggle = { emoji -> onToggleReaction(message.id, emoji) },
+                onAdd = { onAddReaction(message.id) },
+            )
         }
     }
 }
@@ -2937,16 +3267,46 @@ private fun TypingDots() {
 }
 
 // ── AUTO-SCROLL HELPER ──
-// Scrolls to the target item, then compensates for items that extend beyond
-// the viewport (common during streaming when content grows taller than the
-// visible area). Uses scrollToItem (instant) + scrollBy for the remainder.
-// Logs comprehensive debug info: first/last visible indices, viewport height,
-// canScrollForward, and actual item bottom offset.
+// Follows the BOTTOM of the transcript.
 //
-// IMPORTANT: This function MUST complete fully (both steps) to keep the
-// bottom of a tall message visible. The polling loop (StreamLoop) ensures
-// this function runs uninterrupted — it is NOT cancelled by rapid key
-// changes (unlike the old LaunchedEffect on scrollGeneration).
+// v0.2.18 — root cause of "scrolling down while a response streams jumps up":
+// the old implementation called `scrollToItem(targetIndex)` first, which places
+// the target item's TOP at the viewport top, and only then read the layout to
+// scroll the remainder. When that post-snap read landed on a stale layout (no
+// measure pass yet — normal under load), `lastVisible.index >= targetIndex` was
+// false, the correction was skipped, and the viewport stayed pinned at the START
+// of the growing message: every following delta re-snapped the reader back up.
+// Field log 2026-11-08 01:34:49–01:35:53 (device 39151FDJH00HX4, v0.2.17-test)
+// shows exactly that: 60+ consecutive `StreamLoop ... done: firstVisible=5
+// canScrollForward=true` with no compensating step.
+//
+// The follow is now a single `scrollBy(distanceToBottom)`: no top-snap, so no
+// intermediate position to be left stranded in, and the reader is never moved
+// further than the content actually grew. `scrollToItem` remains only for the
+// case where the target item is not laid out at all, and that path waits for
+// the next frame before measuring.
+//
+// DIAG: scrollDiagVsyncs counts vsyncs (incremented by the streaming frame
+// monitor) so the snap path can prove it measured a fresh layout.
+internal val scrollDiagVsyncs = java.util.concurrent.atomic.AtomicLong(0L)
+
+/** The transcript's bottom counts as "in view" within this many px of the
+ *  viewport bottom (≈1.5 text lines at 420dpi; the bottom contentPadding alone
+ *  is ~36px, so `canScrollForward` alone would never report "at bottom"). */
+private const val AT_BOTTOM_SLACK_PX = 72
+
+/** An IME inset below this is the keyboard's open/close animation reporting
+ *  1-2px steps, not an open keyboard — it must not trigger a scroll. */
+private const val MIN_REAL_KEYBOARD_PX = 100
+
+/** Bounded window the end-of-turn settle watches the finished bubble re-measure.
+ *  The tail->full swap's re-layout is spread over many frames (field journal:
+ *  ~500ms of continuous growth), so one frame is a race, not a settle. */
+private const val TURN_END_SETTLE_FRAMES = 90
+
+/** Frames of unchanged measured size while flush that end the settle window
+ *  early (the normal, short-answer case: nothing to follow, ~6 frames). */
+private const val TURN_END_SETTLE_CALM_FRAMES = 6
 
 private suspend fun autoScrollToBottom(
     listState: LazyListState,
@@ -2956,50 +3316,102 @@ private suspend fun autoScrollToBottom(
     reason: String,
 ) {
     val beforeFirst = listState.firstVisibleItemIndex
-    val beforeLast = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
     val beforeCanScroll = listState.canScrollForward
     val beforeViewportHeight = listState.layoutInfo.viewportSize.height
 
     DebugLog.log("SCROLL", reason,
-        "scrollToItem(target=$targetIndex) totalItems=$totalItems " +
-        "gen=$scrollGeneration " +
-        "firstVisibleBefore=$beforeFirst " +
-        "lastVisibleBefore=$beforeLast " +
-        "viewportHeight=$beforeViewportHeight " +
-        "canScrollForward=$beforeCanScroll")
+        "follow start target=$targetIndex totalItems=$totalItems " +
+        "gen=$scrollGeneration firstVisibleBefore=$beforeFirst " +
+        "viewportHeight=$beforeViewportHeight canScrollForward=$beforeCanScroll")
 
-    // Step 1: default scroll to make the target item visible
-    listState.scrollToItem(targetIndex)
+    // Bounded: layout can change under us while a delta lands, so allow a
+    // couple of passes, but never loop on a list that is genuinely at bottom.
+    repeat(3) { pass ->
+        val layoutInfo = listState.layoutInfo
+        // LazyList item offsets are relative to the content origin, not the
+        // viewport's outer top; viewportEndOffset accounts for top padding.
+        val viewportHeight = layoutInfo.viewportEndOffset
+        val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()
 
-    // Step 2: compensate for item taller than viewport.
-    // After scrollToItem, if the last visible item includes the target and
-    // canScrollForward is still true, the item extends below the viewport.
-    // Compute the remaining scroll distance from layout info and scrollBy it.
-    val afterFirst = listState.firstVisibleItemIndex
-    val afterCanScroll = listState.canScrollForward
-    val layoutInfo = listState.layoutInfo
-    val viewportHeight = layoutInfo.viewportSize.height
-    val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()
-
-    if (afterCanScroll && lastVisible != null && lastVisible.index >= targetIndex) {
-        val itemBottom = lastVisible.offset + lastVisible.size
-        val beyondViewport = itemBottom - viewportHeight
-        if (beyondViewport > 0) {
+        if (lastVisible != null && lastVisible.index >= targetIndex) {
+            val itemBottom = lastVisible.offset + lastVisible.size
+            val beyondViewport = itemBottom - viewportHeight
+            if (beyondViewport > 0) {
+                val consumed = listState.scrollBy(beyondViewport.toFloat())
+                DebugLog.log("SCROLL", reason,
+                    "pass$pass scrollBy=${beyondViewport}px (consumed=${consumed.toInt()}) " +
+                    "item[${lastVisible.index}] offset=${lastVisible.offset} " +
+                    "size=${lastVisible.size} bottom=$itemBottom viewport=$viewportHeight")
+                // LazyColumn consumes at most what it can lay out per pass; loop
+                // (bounded) to take up the remainder rather than leaving the
+                // newest line below the fold.
+            } else if (
+                lastVisible.index == listState.firstVisibleItemIndex &&
+                lastVisible.size >= viewportHeight &&
+                itemBottom < viewportHeight - AT_BOTTOM_SLACK_PX &&
+                !listState.canScrollForward
+            ) {
+                // v0.2.19 stale-extent self-heal. The last item is TALLER than
+                // the viewport, its measured bottom sits well ABOVE the viewport
+                // bottom, and the list claims it cannot scroll forward: the
+                // extent shrank under a fast fling while the streaming tail
+                // window re-anchored the text, leaving the viewport parked past
+                // the true maximum. Field 2026-11-08 (verify-b, 0.2.17-test):
+                // offset=1792 with a valid max ~1529, item size constant 2473,
+                // bottom=681 of a 980 viewport, canFwd=false — and every follow
+                // pass after that logged "at-bottom" and did nothing, so the
+                // turn-end tail->full swap re-anchored ~1900px of text under a
+                // frozen viewport. scrollBy cannot fix this (there is nothing
+                // forward to scroll), so re-anchor explicitly: put the item's
+                // bottom flush against the viewport and let the next pass
+                // measure the fresh layout.
+                // Guards: a genuinely short last item (whole transcript fits)
+                // keeps its at-bottom verdict; a flush layout with the 16dp
+                // bottom padding is inside the slack window and never lands here.
+                val wantOffset = (lastVisible.size - viewportHeight).coerceAtLeast(0)
+                val currentOffset = listState.firstVisibleItemScrollOffset
+                if (wantOffset != currentOffset) {
+                    DebugLog.log("SCROLL", reason,
+                        "pass$pass stale-extent re-anchor item[${lastVisible.index}] " +
+                        "offset=$currentOffset -> $wantOffset size=${lastVisible.size} " +
+                        "bottom=$itemBottom viewport=$viewportHeight")
+                    listState.scrollToItem(lastVisible.index, wantOffset)
+                    withFrameNanos { }
+                } else {
+                    // Offset already agrees with the measured size, yet the
+                    // bottom is above the fold and forward scroll is refused:
+                    // the drawn content is taller than the measured box. A
+                    // scroll cannot fix that; report it instead of looping.
+                    DebugLog.log("SCROLL", reason,
+                        "pass$pass clamped-stale item[${lastVisible.index}] " +
+                        "offset=$currentOffset size=${lastVisible.size} " +
+                        "bottom=$itemBottom viewport=$viewportHeight")
+                    return
+                }
+            } else {
+                DebugLog.log("SCROLL", reason,
+                    "pass$pass at-bottom item[${lastVisible.index}] bottom=$itemBottom " +
+                    "viewport=$viewportHeight")
+                return
+            }
+        } else {
+            // Target item isn't in the laid-out set: bring it into view, then wait
+            // for a real measure pass before measuring it for the remainder.
+            val diagVsync0 = scrollDiagVsyncs.get()
             DebugLog.log("SCROLL", reason,
-                "compensating: item[${lastVisible.index}] offset=${lastVisible.offset} " +
-                "size=${lastVisible.size} bottom=$itemBottom " +
-                "viewportHeight=$viewportHeight beyond=$beyondViewport px")
-            listState.scrollBy(beyondViewport.toFloat())
+                "pass$pass snapToItem=$targetIndex (not laid out, visCount=${layoutInfo.visibleItemsInfo.size})")
+            listState.scrollToItem(targetIndex)
+            withFrameNanos { }
+            DebugLog.log("SCROLL", reason,
+                "pass$pass post-snap measured firstVisible=${listState.firstVisibleItemIndex} " +
+                "canScrollForward=${listState.canScrollForward} " +
+                "vsyncs_since_snap=${scrollDiagVsyncs.get() - diagVsync0}")
         }
     }
 
-    val afterFirst2 = listState.firstVisibleItemIndex
-    val afterLast2 = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-    val afterCanScroll2 = listState.canScrollForward
     DebugLog.log("SCROLL", reason,
-        "done: firstVisible=$afterFirst2 " +
-        "lastVisible=$afterLast2 " +
-        "canScrollForward=$afterCanScroll2")
+        "gave up after 3 passes: firstVisible=${listState.firstVisibleItemIndex} " +
+        "canScrollForward=${listState.canScrollForward}")
 }
 
 /** Compact token count formatting: 85123 → "85.1k", 1048576 → "1.0M". */

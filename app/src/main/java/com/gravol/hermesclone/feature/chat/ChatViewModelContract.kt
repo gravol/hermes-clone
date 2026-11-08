@@ -60,6 +60,18 @@ abstract class ChatViewModelContract(application: Application) : AndroidViewMode
     /** Chat Settings sheet: write a new session title (session.title RPC). */
     open suspend fun renameSession(title: String): Boolean = false
 
+    // ── Message actions (official long-press menu, 2026-11-08) ──
+    /** Set/retract this user's emoji reaction on a message (message.react). */
+    open fun toggleReaction(messageId: String, emoji: String) {}
+    /** Rewind the last user turn server-side (session.undo). */
+    open fun undoLastTurn() {}
+    /** Rewind to before [messageId] and submit [text] (prompt.submit + truncate). */
+    open fun rewindAndResubmit(messageId: String, text: String) {}
+    /** Fork the session keeping everything up to [messageId] (session.branch). */
+    open fun branchFromMessage(messageId: String, onCreated: (String) -> Unit) {}
+    /** How many stored messages a branch from [messageId] would carry over. */
+    open suspend fun branchMessageCount(messageId: String): Int = 0
+
     // ── YOLO mode (v0.1.4) — session-scoped approval-skip toggle ──
     /** Load the current YOLO state from the server (for the composer button). */
     /** Toggle YOLO mode on/off for this session. */

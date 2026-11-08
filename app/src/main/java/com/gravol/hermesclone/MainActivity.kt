@@ -492,6 +492,14 @@ fun HermexNavGraph(chatVmsHolder: ChatVmsHolder) {
                     val encTitle = URLEncoder.encode(session.title ?: session.id, "UTF-8")
                     navController.navigate("chat/${session.id}/$encTitle/${URLEncoder.encode(session.source ?: "default", "UTF-8")}") { launchSingleTop = true }
                 },
+                // v0.2.18: drawer rail "Chat" → back to the chat/session lists. Pop whatever
+                // chat entries sit above Home; if Home is not on the back stack (deep link /
+                // notification entry) navigate to it instead of doing nothing.
+                onOpenChats = {
+                    if (!navController.popBackStack("home", inclusive = false)) {
+                        navController.navigate("home") { launchSingleTop = true }
+                    }
+                },
             )
         }
     }

@@ -30,6 +30,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Folder
@@ -93,6 +95,13 @@ data class BgProc(
     val uptimeSeconds: Int,
     val exitCode: Int?,
     val outputPreview: String,
+    // v0.2.18: the task viewer needs what `process.list` actually ships —
+    // cwd/pid/started_at come from the registry row, output_tail (last 4000
+    // chars) is the gateway's own viewer payload (`_session_processes`).
+    val cwd: String? = null,
+    val pid: Int? = null,
+    val startedAt: String? = null,
+    val outputTail: String = "",
 ) {
     val running: Boolean get() = status.lowercase() in runningStatuses
 }
@@ -108,6 +117,12 @@ private fun parseProcs(payload: JsonObject): List<BgProc> = try {
             uptimeSeconds = o["uptime_seconds"]?.jsonPrimitive?.intOrNull ?: 0,
             exitCode = o["exit_code"]?.jsonPrimitive?.intOrNull,
             outputPreview = o["output_preview"]?.jsonPrimitive?.contentOrNull ?: "",
+            cwd = o["cwd"]?.jsonPrimitive?.contentOrNull,
+            pid = o["pid"]?.jsonPrimitive?.intOrNull,
+            startedAt = o["started_at"]?.jsonPrimitive?.contentOrNull,
+            outputTail = o["output_tail"]?.jsonPrimitive?.contentOrNull
+                ?: o["output_preview"]?.jsonPrimitive?.contentOrNull
+                ?: "",
         )
     }.orEmpty()
 } catch (_: Exception) {
@@ -304,6 +319,11 @@ fun BackgroundWorkSheet(
     onKill: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    // v0.2.18: the task row is now a real target — tapping it opens the task
+    // (cwd / pid / started / uptime / exit + the gateway's output_tail viewer
+    // payload). Before this the row was inert: the task showed in the sheet but
+    // there was no way to click through to it.
+    var expandedId by remember { mutableStateOf<String?>(null) }
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
@@ -323,7 +343,11 @@ fun BackgroundWorkSheet(
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
                 shape = RoundedCornerShape(16.dp),
             ) {
-                Column {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 430.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -354,7 +378,12 @@ fun BackgroundWorkSheet(
                                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
                             )
                         }
-                        BgTaskRow(p, onKill)
+                        BgTaskRow(
+                            p = p,
+                            expanded = expandedId == p.id,
+                            onToggle = { expandedId = if (expandedId == p.id) null else p.id },
+                            onKill = onKill,
+                        )
                     }
                 }
             }
@@ -363,8 +392,18 @@ fun BackgroundWorkSheet(
 }
 
 @Composable
-private fun BgTaskRow(p: BgProc, onKill: (String) -> Unit) {
-    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+private fun BgTaskRow(
+    p: BgProc,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    onKill: (String) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onToggle)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+    ) {
         Text(
             text = p.command,
             style = MaterialTheme.typography.bodySmall.copy(
@@ -372,7 +411,7 @@ private fun BgTaskRow(p: BgProc, onKill: (String) -> Unit) {
                 fontSize = 12.sp,
                 lineHeight = 16.sp,
             ),
-            maxLines = 2,
+            maxLines = if (expanded) Int.MAX_VALUE else 2,
             overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
             color = MaterialTheme.colorScheme.onSurface,
         )
@@ -425,8 +464,19 @@ private fun BgTaskRow(p: BgProc, onKill: (String) -> Unit) {
                     modifier = Modifier.weight(1f),
                 )
             }
+            Spacer(Modifier.width(6.dp))
+            // The row's own "go to task" affordance: open/close the task view.
+            Icon(
+                imageVector = if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                contentDescription = if (expanded) "Hide task details" else "Show task details",
+                modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
-        if (p.outputPreview.isNotBlank()) {
+        if (expanded) {
+            Spacer(Modifier.height(8.dp))
+            BgTaskDetails(p)
+        } else if (p.outputPreview.isNotBlank()) {
             Spacer(Modifier.height(4.dp))
             Text(
                 text = p.outputPreview,
@@ -439,6 +489,77 @@ private fun BgTaskRow(p: BgProc, onKill: (String) -> Unit) {
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
             )
         }
+    }
+}
+
+/** The task view: what the process is, where it runs, and its output. */
+@Composable
+private fun BgTaskDetails(p: BgProc) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(androidx.compose.ui.graphics.Color(0x33000000))
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+    ) {
+        BgDetailLine("Status", if (p.running) "Running" else "Exited")
+        BgDetailLine("Uptime", formatUptime(p.uptimeSeconds))
+        p.startedAt?.takeIf { it.isNotBlank() }?.let { BgDetailLine("Started", it) }
+        p.pid?.takeIf { it > 0 }?.let { BgDetailLine("PID", it.toString()) }
+        p.cwd?.takeIf { it.isNotBlank() }?.let { BgDetailLine("Working dir", it) }
+        p.exitCode?.let { BgDetailLine("Exit code", it.toString()) }
+        BgDetailLine("Task id", p.id)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = "Output",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(4.dp))
+        val output = p.outputTail.ifBlank { p.outputPreview }
+        Text(
+            text = output.ifBlank { "No output yet." }.let {
+                if (it.length > 3000) "…" + it.takeLast(3000) else it
+            },
+            style = MaterialTheme.typography.bodySmall.copy(
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                fontSize = 11.sp,
+                lineHeight = 15.sp,
+            ),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
+        )
+    }
+}
+
+@Composable
+private fun BgDetailLine(label: String, value: String) {
+    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp)) {
+        Text(
+            text = "$label: ",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+            ),
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 2,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+        )
+    }
+}
+
+private fun formatUptime(seconds: Int): String {
+    if (seconds <= 0) return "0s"
+    val h = seconds / 3600
+    val m = (seconds % 3600) / 60
+    val s = seconds % 60
+    return when {
+        h > 0 -> "${h}h ${m}m"
+        m > 0 -> "${m}m ${s}s"
+        else -> "${s}s"
     }
 }
 
