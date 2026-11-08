@@ -32,7 +32,13 @@ class P2ReplaySupplementTest {
                 "blankB,rowIdB,contentLenB,reconcile,replayAction,filteredLines,genEnd\n"
         )
         var blanks = 0
-        for (i in 310..spec.frames.lastIndex) {
+        val indices = if (System.getenv("HERMEX_EXHAUSTIVE_REPLAY") == "1") {
+            (310..spec.frames.lastIndex).toList()
+        } else {
+            listOf(310, spec.idxComplete - 1, spec.idxComplete, spec.frames.lastIndex)
+                .filter { it in 310..spec.frames.lastIndex }.distinct()
+        }
+        for (i in indices) {
             for (mode in listOf(ReplayTestbed.Mode.SECOND_VM, ReplayTestbed.Mode.SECOND_VM_SID_ROTATION)) {
                 val cfg = ReplayTestbed.TrialConfig(mode, ReplayTestbed.RingMode.INTACT, i)
                 val r = tb.runTrial(cfg)
@@ -48,7 +54,8 @@ class P2ReplaySupplementTest {
                 if (r.blankA || r.blankB == true) blanks++
             }
         }
-        println("P2 tail sweep done: trials=${2 * (spec.frames.lastIndex - 309)} blanks=$blanks")
+        println("P2 tail sweep done: trials=${2 * indices.size} blanks=$blanks")
+        assertTrue("blank rows in $blanks tail-sweep trials; see ${matrix.absolutePath}", blanks == 0)
     }
 
     @Test

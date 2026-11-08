@@ -52,10 +52,10 @@ class SecretStorageAndBackupRulesTest {
     @Test
     fun secretStoresHaveNoPlaintextFallback() {
         val keychain = read(
-            "core", "data", "src", "main", "java", "com", "hermex", "core", "data", "auth", "KeychainStore.kt",
+            "core", "data", "src", "main", "java", "com", "gravol", "hermesclone", "core", "data", "auth", "KeychainStore.kt",
         )
         val cookies = read(
-            "core", "network", "src", "main", "java", "com", "hermex", "core", "network", "CookiePersistor.kt",
+            "core", "network", "src", "main", "java", "com", "gravol", "hermesclone", "core", "network", "CookiePersistor.kt",
         )
         // getSharedPreferences(...) is the plaintext store. Neither file may open one.
         assertFalse("KeychainStore opened plain SharedPreferences", keychain.contains("getSharedPreferences("))
@@ -67,7 +67,7 @@ class SecretStorageAndBackupRulesTest {
     @Test
     fun settingsScreenDoesNotAssertEncryptionUnconditionally() {
         val screen = read(
-            "app", "src", "main", "java", "com", "hermex", "v3", "feature", "settings", "SettingsScreen.kt",
+            "app", "src", "main", "java", "com", "gravol", "hermesclone", "feature", "settings", "SettingsScreen.kt",
         )
         assertTrue(
             "the encryption claim must be derived from the storage mode",
@@ -84,7 +84,7 @@ class SecretStorageAndBackupRulesTest {
     @Test
     fun encryptedStoreIsNotDeletedOnTheSuccessPath() {
         val src = read(
-            "core", "network", "src", "main", "java", "com", "hermex", "core", "network", "SecureStore.kt",
+            "core", "network", "src", "main", "java", "com", "gravol", "hermesclone", "core", "network", "SecureStore.kt",
         )
         val start = src.indexOf("EncryptedSharedPreferences.create(")
         val end = src.indexOf("return prefs", start)

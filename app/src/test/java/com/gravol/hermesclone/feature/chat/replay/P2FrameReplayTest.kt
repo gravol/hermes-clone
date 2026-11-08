@@ -16,9 +16,8 @@ import java.io.File
  * served answer (plumbing sanity + positive control that the stream itself is good).
  *
  * Sweep test: inject a transport detach/reconnect (ring intact / ring lost) or a second
- * chat ViewModel registering for the same session after EVERY frame index of the
- * 424-frame stream, and report at which insertion points the final assistant row ends
- * up BLANK while the served message.complete text is non-empty.
+ * chat ViewModel registering for the same session at representative frame indices of the
+ * 424-frame stream. Set HERMEX_EXHAUSTIVE_REPLAY=1 to test every insertion point.
  *
  * The expectation FLIPPED in v0.1.894 and that flip is deliberate. Before the fixes this
  * test's job was to prove blanks reproduce (positive control: `blanks.isNotEmpty()`), and
@@ -77,14 +76,24 @@ class P2FrameReplayTest {
         val perConfigCounts = LinkedHashMap<String, Int>()
         val startMs = System.currentTimeMillis()
         var sweepTruncatedAt: String? = null
+        var trialsRun = 0
 
+        // The exhaustive 1,696-trial investigation takes many minutes. Keep representative
+        // boundary and historical regression points in the normal suite; opt in to all points
+        // with HERMEX_EXHAUSTIVE_REPLAY=1. Never silently pass a truncated exhaustive sweep.
+        val indices = if (System.getenv("HERMEX_EXHAUSTIVE_REPLAY") == "1") {
+            (0..spec.frames.lastIndex).toList()
+        } else {
+            listOf(0, 1, spec.frames.lastIndex / 2, spec.idxComplete - 1,
+                spec.idxComplete, spec.frames.lastIndex).filter { it in spec.frames.indices }.distinct()
+        }
         val configs = ArrayList<ReplayTestbed.TrialConfig>()
         for (ring in listOf(ReplayTestbed.RingMode.INTACT, ReplayTestbed.RingMode.TRUNCATED_EMPTY)) {
-            for (i in 0..spec.frames.lastIndex) {
+            for (i in indices) {
                 configs += ReplayTestbed.TrialConfig(ReplayTestbed.Mode.RECONNECT, ring, i)
             }
         }
-        for (i in 0..spec.frames.lastIndex) {
+        for (i in indices) {
             configs += ReplayTestbed.TrialConfig(ReplayTestbed.Mode.SECOND_VM, ReplayTestbed.RingMode.INTACT, i)
             configs += ReplayTestbed.TrialConfig(ReplayTestbed.Mode.SECOND_VM_SID_ROTATION, ReplayTestbed.RingMode.INTACT, i)
         }
@@ -96,6 +105,7 @@ class P2FrameReplayTest {
             }
             val detailed = cfg.injectAfter % 101 == 0
             val r = tb.runTrial(cfg.copy(detailedTags = detailed))
+            trialsRun++
             val frameType = spec.frames[cfg.injectAfter].type
             val reconcile = r.gateLines.firstOrNull { it.contains("reconcile=") }
                 ?.substringAfter("reconcile=")?.take(5) ?: "-"
@@ -120,7 +130,7 @@ class P2FrameReplayTest {
         val summary = File(outDir, "summary.txt")
         summary.writeText(buildString {
             appendLine("P2 frame-replay sweep — ${java.time.Instant.now()}")
-            appendLine("trials configured=${configs.size} run=${minOf(configs.size, if (sweepTruncatedAt == null) configs.size else -1)}" +
+            appendLine("trials configured=${configs.size} run=$trialsRun" +
                 (sweepTruncatedAt?.let { " TRUNCATED: $it" } ?: ""))
             appendLine("blank-final-row hits: ${blanks.size}")
             for (b in blanks.take(80)) {
@@ -134,6 +144,7 @@ class P2FrameReplayTest {
         })
         println("P2 sweep done: blanks=${blanks.size} matrix=${matrix.absolutePath}")
 
+        assertTrue(sweepTruncatedAt ?: "sweep completed", sweepTruncatedAt == null)
         assertTrue(
             "blank final assistant rows remain at ${blanks.size} insertion points after the " +
             "v0.1.894 fixes (FIX 3 terminal upsert / FIX 4 liveSid rotation adoption): " +
