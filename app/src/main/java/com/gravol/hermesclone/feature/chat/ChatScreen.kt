@@ -1152,6 +1152,68 @@ fun ChatScreen(
         }
     }
 
+    // v0.2.20: keyboard follow under adjustResize (fixes v0.2.18-test
+    // regression: opening the keyboard over an existing chat at the bottom
+    // left the newest text hidden behind it).
+    //
+    // With manifest windowSoftInputMode=adjustResize the OS RESIZES the window
+    // for the IME instead of dispatching IME insets, so WindowInsets.ime never
+    // grows past 1-2px and the imeBottom effect above can never pass its
+    // MIN_REAL_KEYBOARD_PX gate. Field journal (2026-11-08, Pixel 8, FUTO IME,
+    // v0.2.18-test): every `Keyboard OPEN` event logged `imeHeight=1..2px`, the
+    // viewport animated 1991→980px, and `reason=Keyboard` appears ZERO times in
+    // the whole journal — the keyboard scroll never ran.
+    //
+    // The list viewport itself is the reliable signal: it loses >= 100px
+    // exactly when the keyboard takes that space. Act only on a SHRINK (on
+    // close the newest text is already visible; don't move the reader), wait
+    // for the 1-2px animation steps to settle (debounce), then re-pin ONCE —
+    // one follow per transition, which also kills the old v0.2.17 mid-anim
+    // scroll spam. The userScrolledUp gate preserves a reader who scrolled
+    // away, same as every other follow here.
+    LaunchedEffect(listState) {
+        var stableViewportH = -1
+        snapshotFlow { listState.layoutInfo.viewportSize.height }
+            .distinctUntilChanged()
+            .collect { h ->
+                if (stableViewportH < 0) {
+                    stableViewportH = h
+                    return@collect
+                }
+                if (h > stableViewportH) {
+                    // Viewport grew (keyboard closed / panel undocked):
+                    // newest text stayed visible — just track the new height.
+                    stableViewportH = h
+                    return@collect
+                }
+                if (stableViewportH - h < MIN_REAL_KEYBOARD_PX) return@collect
+                // Big shrink in progress: debounce until the height stops
+                // moving for a beat, then act once. While the IME animates,
+                // each new emission re-arms this delay from the conflate.
+                delay(350)
+                val nowH = listState.layoutInfo.viewportSize.height
+                if (nowH != h) return@collect  // still animating; a later emission re-arms
+                val shrunkFrom = stableViewportH
+                stableViewportH = nowH
+                val s = viewModel.uiState
+                if (!userScrolledUp && s.messages.isNotEmpty()) {
+                    DebugLog.log("SCROLL", "ViewportShrink",
+                        "viewport lost ${shrunkFrom - nowH}px (${shrunkFrom}→$nowH, keyboard resize) -> re-pin")
+                    autoScrollToBottom(
+                        listState = listState,
+                        targetIndex = s.messages.lastIndex,
+                        totalItems = s.messages.size,
+                        scrollGeneration = s.scrollGeneration,
+                        reason = "ViewportShrink",
+                    )
+                } else {
+                    DebugLog.log("SCROLL", "ViewportShrink",
+                        "viewport lost ${shrunkFrom - nowH}px but skipped " +
+                        "(userScrolledUp=$userScrolledUp messages=${s.messages.size})")
+                }
+            }
+    }
+
     // v0.2.5: when the composer grows (multi-line draft, activity chips) the
     // viewport shrinks — re-pin to the newest line so the streaming answer
     // stays above the chat box, exactly like the official app.
