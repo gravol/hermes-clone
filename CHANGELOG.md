@@ -267,7 +267,7 @@ Three subagent-visibility surfaces, client-only against live gateway RPCs (no se
   (4 tests: passthrough under the limit, power-of-two ladder for 3200/4032/9000 px, one oversized side,
   and a minimality sweep). `OutOfMemoryError` on a huge decode now returns null (toast) instead of
   crashing the process.
-- **Device proof, Pixel 8 (`shiba`, 39151FDJH00HX4), release-signed build.** Positive control first on the
+- **Device proof, Pixel 8 (`shiba`, <test-phone-serial>), release-signed build.** Positive control first on the
   installed v0.1.898: pushed a known plain JPEG into `/sdcard/Pictures`, MediaStore-scanned it, picked it in
   the photo picker → toast "Couldn't read image" (so a plain JPEG fails too — rules out HEIF/permissions).
   After installing the fixed build over it (same signing cert, login preserved): the same pick produced the
@@ -404,7 +404,7 @@ Three subagent-visibility surfaces, client-only against live gateway RPCs (no se
   `testDebugUnitTest` plus `:app:assembleDebug`: **BUILD SUCCESSFUL in 14m30s, 22 suites / 141 tests /
   0 failures** (was 21 suites / 135 before this round; +49 tests across six new files listed above). The
   built APK's manifest was read back before installing (`aapt2 dump badging` → `versionCode=42
-  versionName=0.1.896`) rather than trusting the build output path. On the Pixel 8 (`39151FDJH00HX4`):
+  versionName=0.1.896`) rather than trusting the build output path. On the Pixel 8 (`<test-phone-serial>`):
   installs over v0.1.894, cold start `TotalTime: 2269 ms` with the 70 MB journal pair present, process
   alive, no ANR — that is the startup fix measured against the fixture that caused it.
 - **Not verified at the time of writing, then verified — with one of my own diagnoses corrected.** I first
@@ -506,7 +506,7 @@ All three returned **SHIP-WITH-CHANGES**. Their required changes are in this rel
 - **Declined: the redaction pre-filter optimisation is out of this change** (all three: keep a security-sensitive change separate from behaviour changes; it needs differential-equivalence and canary tests of its own). `DebugLog.redactSecrets` is byte-for-byte the previous implementation again. The rotation knob and the `TRACE|rotate` marker stay — they are measurement infrastructure, not behaviour.
 - **Declined for now, recorded:** replacing rule C's lost coverage with a seq-gap detector (the app now has a per-frame `seq`, so that is the right replacement signal; not built, no evidence yet that it is needed — FIX 5 covers the concrete sequence a reviewer produced); sampling or gating `disp` lines (the journal is debug-only: `HermexApplication` initialises `DebugLog` under `BuildConfig.DEBUG`, so release builds never write them); pruning `cidByGen` in `ClientConnId`.
 - **Verification.** Full unit suites for `:app`, `:core:network` and `:core:data`: 13 suites / 70 tests / **0 failures** (includes the 424-index frame-replay sweep), `BUILD SUCCESSFUL in 14m38s`; targeted subset over every touched surface re-run green after FIX 5; each fix mutation-checked.
-- **Device (Pixel 8 `39151FDJH00HX4`, 0.1.894/vc40, matched three-ChatVM config, varied prompts) — note `HermexAndroid/p5-device-verification-v0.1.894-2026-10-19.md`.** Scenario D N=10 (mid-turn socket kill at +20 s): 9 valid trials, **9 rendered answers, 0 blank rows**, every trial `DELIVERED-AND-ACCEPTED` (e.g. gateway routed 522 frames → client ingress 524 → one ViewModel applied 524 while the other two filtered their copies). Control N=8 with no fault: **7 PASS / 1 INCONCLUSIVE** (a provider stall at 0.0 tok/s, not an app fault). Across the scenario-D journals: **9 of 9 poll loops reached ≥2 ticks** (previously 274 of 315 stopped at one), and `gate_poll rule=` shows **zero count-based reloads** with only the 9 legitimate rule-B cases produced by the kills themselves. Journals span 94 %+ of each window with zero rotation markers.
+- **Device (Pixel 8 `<test-phone-serial>`, 0.1.894/vc40, matched three-ChatVM config, varied prompts) — note `HermexAndroid/p5-device-verification-v0.1.894-2026-10-19.md`.** Scenario D N=10 (mid-turn socket kill at +20 s): 9 valid trials, **9 rendered answers, 0 blank rows**, every trial `DELIVERED-AND-ACCEPTED` (e.g. gateway routed 522 frames → client ingress 524 → one ViewModel applied 524 while the other two filtered their copies). Control N=8 with no fault: **7 PASS / 1 INCONCLUSIVE** (a provider stall at 0.0 tok/s, not an app fault). Across the scenario-D journals: **9 of 9 poll loops reached ≥2 ticks** (previously 274 of 315 stopped at one), and `gate_poll rule=` shows **zero count-based reloads** with only the 9 legitimate rule-B cases produced by the kills themselves. Journals span 94 %+ of each window with zero rotation markers.
 - **Still unproven on device:** rule D actually healing a blank row (no blank rows occurred in these 18 trials — its reachability is now real, the recovery itself is JVM-tested only), and D/14's original mechanism (H1 vs H2), which predates this instrumentation.
 
 ## v0.1.893 (vc39) — 2026-10-19

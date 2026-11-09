@@ -3372,7 +3372,7 @@ private fun TypingDots() {
 // measure pass yet — normal under load), `lastVisible.index >= targetIndex` was
 // false, the correction was skipped, and the viewport stayed pinned at the START
 // of the growing message: every following delta re-snapped the reader back up.
-// Field log 2026-11-08 01:34:49–01:35:53 (device 39151FDJH00HX4, v0.2.17-test)
+// Field log 2026-11-08 01:34:49–01:35:53 (device <test-phone-serial>, v0.2.17-test)
 // shows exactly that: 60+ consecutive `StreamLoop ... done: firstVisible=5
 // canScrollForward=true` with no compensating step.
 //

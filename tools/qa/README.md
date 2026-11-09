@@ -11,7 +11,7 @@ that directory. Paths inside the scripts default to `~/hermex-qa/` for their out
 
 ## Hard prerequisites
 
-- Pixel 8 `39151FDJH00HX4` (shiba), `com.hermex.v3` installed as a **debug** build — release builds
+- Pixel 8 `<test-phone-serial>` (shiba), `com.hermex.v3` installed as a **debug** build — release builds
   are not debuggable, so `adb shell run-as com.hermex.v3 cat files/debuglog/hermex.log` fails there
   and the journal, which is the primary evidence source, is unreadable.
 - The app signed in and connected to the gateway on `:9119`; the gateway host must be reachable with

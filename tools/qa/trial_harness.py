@@ -34,8 +34,12 @@ import sys
 import time
 from datetime import datetime
 
-SERIAL = "39151FDJH00HX4"          # Pixel 8 (shiba), tailnet 100.101.185.85
-PHONE_TS = "100.101.185.85"
+# Test device identity comes from the environment (see README) so no
+# personal tailnet addresses or device serials live in this repo.
+SERIAL = os.environ.get("HERMEX_QA_SERIAL", "")      # adb serial of the test phone
+PHONE_TS = os.environ.get("HERMEX_QA_PHONE_TS", "")  # phone's Tailscale/IP host
+if not SERIAL:
+    sys.exit("Set HERMEX_QA_SERIAL (and optionally HERMEX_QA_PHONE_TS) before running the harness.")
 PKG = "com.hermex.v3"
 GATEWAY_TRACE = os.path.expanduser("~/.hermes/logs/gateway_frame_trace.log")
 OUT_DIR = os.path.dirname(os.path.abspath(__file__))
