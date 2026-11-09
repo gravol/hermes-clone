@@ -5,6 +5,7 @@ import android.util.Log
 import com.gravol.hermesclone.core.data.auth.KeychainStore
 import com.gravol.hermesclone.core.network.DashboardApiClient
 import com.gravol.hermesclone.core.network.DebugLog
+import com.gravol.hermesclone.diagnostics.ProcessExitReport
 
 class HermexApplication : Application() {
     override fun onCreate() {
@@ -23,6 +24,11 @@ class HermexApplication : Application() {
         }
         DebugLog.log("INFO", "HermexApp", "app process start (v${BuildConfig.VERSION_NAME}) " +
             "journalRotationBytes=${DebugLog.journalRotationBytes()}")
+
+        // How did the LAST process die? The journal only records deaths that reach the handler
+        // below; native crashes, ANR kills, low-memory kills and force-stops leave no trace in it,
+        // which is why "crashing with no crash report" was unanswerable. Off the main thread.
+        ProcessExitReport.reportPreviousExits(this)
 
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
