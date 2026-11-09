@@ -34,8 +34,8 @@ object DashboardApiClient {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true; encodeDefaults = true }
     private val mediaTypeJson = "application/json".toMediaType()
 
-    private var restUrl: String = ""            // e.g. "http://100.80.204.66:9119"
-    private var wsUrl: String = ""              // e.g. "ws://100.80.204.66:9119"  (derived)
+    private var restUrl: String = ""            // e.g. "http://<gateway-host>:9119"
+    private var wsUrl: String = ""              // e.g. "ws://<gateway-host>:9119"  (derived)
     private var dashboardPassword: String = ""
     private var dashboardUsername: String = ""
     private lateinit var httpClient: OkHttpClient

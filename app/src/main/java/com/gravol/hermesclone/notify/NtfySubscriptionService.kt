@@ -98,7 +98,7 @@ class NtfySubscriptionService : Service() {
     private var seedTs = 0L
 
     companion object {
-        const val DEFAULT_SERVER = "http://100.80.204.66:8080"
+        const val DEFAULT_SERVER = "https://ntfy.sh"
 
         // Every topic the BigRed side publishes to: hermes-out (gateway replies +
         // cron deliver=ntfy), hermes-sessions (turn-finished), hermes-cron and

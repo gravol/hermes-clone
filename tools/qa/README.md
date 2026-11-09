@@ -4,7 +4,7 @@ Scripts here drive a real phone over ADB and decide what the app actually did du
 fault. They exist because reading code was not enough: three separate defects in this area were
 found only by forcing a fault mid-turn on hardware and reading both sides of the wire afterwards.
 
-This is a copy of the working set used for the v0.1.892–v0.1.894 investigation (`~/hermex-qa/`),
+This working set was checked in from the v0.1.892–v0.1.894 investigation,
 checked in so the results quoted in `CHANGELOG.md` and the vault notes can be reproduced without
 that directory. Paths inside the scripts default to `~/hermex-qa/` for their output
 (`trials.jsonl`, `shots/`); run them from wherever you want that data to land, or edit `OUT_DIR`.

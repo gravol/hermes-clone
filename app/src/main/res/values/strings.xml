@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Hermes Clone</string>
+    <string name="app_name">Hermex 4</string>
     <!-- Foreground service notification channel -->
     <string name="notification_channel_name">Hermes Connection</string>
     <string name="notification_channel_description">Keeps the chat connection alive when the app is in the background</string>

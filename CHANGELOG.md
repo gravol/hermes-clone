@@ -64,7 +64,7 @@ Ported the official client's chat feel (from Jeff's screenshots of it), keeping 
 
 ## v0.5.9 (vc58) — see my delegated children from the phone
 
-Three subagent-visibility surfaces, client-only against live gateway RPCs (no server patch), from diffing the official Nous mobile beta against Hermex. Skills was already covered by the existing Skills & Tools screen.
+Three subagent-visibility surfaces, client-only against live gateway RPCs (no server patch). Skills was already covered by the existing Skills & Tools screen.
 
 - **Children sheet** (chat top bar): live children of the open session — resume for the live sid (subagent.* RPCs demand the live sid on the attached transport, never the DB key), roster via 3 s poll + debounced `subagent.*` frames, transcript tail, steer (honest `queued` semantics), interrupt, and a failed-delegations section that survives the live roster forgetting. Watch opens the child's mirror session when its `subagent.start` frame was seen.
 - **Agents screen** (chat rail): global `delegation.status` roster across all sessions (model/tools/elapsed/depth + parent), 5 s poll, global spawn-pause chip.
@@ -287,7 +287,7 @@ Three subagent-visibility surfaces, client-only against live gateway RPCs (no se
   routing id and carries the server's `session_key` separately as `storedKey`; the ViewModel arm drops
   its key comparison because the sid gate has already routed the frame. Two parser tests pin both ids.
 - **Everything a second user needs to type is now labelled as theirs.** Onboarding pre-filled
-  `http://100.80.204.66:9119` — one developer's tailnet address — and had no username field: the app
+  `http://<gateway>:9119` — one developer's tailnet address — and had no username field: the app
   signed every installer in as `"jeff"` through defaults in `DashboardApiClient`, `KeychainStore`,
   `HermexApplication` and the setup ViewModel. A fresh install therefore failed login against an account
   that does not exist on their gateway, and the error said "check password". There is now an explicit
@@ -410,7 +410,7 @@ Three subagent-visibility surfaces, client-only against live gateway RPCs (no se
 - **Not verified at the time of writing, then verified — with one of my own diagnoses corrected.** I first
   wrote that the phone's Tailscale had been down since its reboot; the `ENETUNREACH` was real, but my check
   was wrong: Android's interface is `tun0`, not `tailscale0`, and `ip addr show tailscale0` finds nothing on
-  a healthy device. Opening the Tailscale app brought the VPN up (`tun0 100.101.185.85/32`, route
+  a healthy device. Opening the Tailscale app brought the VPN up (`tun0 <redacted>/32`, route
   `100.64.0.0/10`, ping to BigRed 5.6 ms) and the app reconnected immediately. With that fixed, the
   connected checks were run on the Pixel 8 and one of them found a real bug — see the next bullet.
 - **Phase 2 confirmed on device, and `session.title` needed a second fix that only the device could show.**
@@ -1126,12 +1126,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Removed `hostnameVerifier { _, _ -> true }`, trust-all `X509TrustManager`, and `sslSocketFactory()` override (dead code on plain-HTTP dashboard).
-- Replaced app-wide `android:usesCleartextTraffic="true"` with `network_security_config.xml` scoping cleartext to `100.80.204.66` only.
+- Replaced app-wide `android:usesCleartextTraffic="true"` with `network_security_config.xml` scoping cleartext to `<gateway>` only.
 
 ## [0.1.33] — 2026-07-18 — Phase 5D.2: Port 8443 cleanup
 
 ### Fixed
-- Dashboard serves REST + WebSocket on **9119** plain HTTP — code assumed 8443 HTTPS. `setDashboardUrl()` now derives WS URL by scheme-only swap (port preserved); default URL updated to `http://100.80.204.66:9119`.
+- Dashboard serves REST + WebSocket on **9119** plain HTTP — code assumed 8443 HTTPS. `setDashboardUrl()` now derives WS URL by scheme-only swap (port preserved); default URL updated to `http://<gateway>:9119`.
 
 ## [0.1.32] — 2026-07-18 — Phase 5D fix: Stuck scroll loop
 
@@ -1283,7 +1283,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - `WsConnectionManager.connect()` now waits for the WebSocket handshake to complete before returning (`waitForConnection()`)
 - Explicit `provider='basic'` in login requests + `encodeDefaults = true` in kotlinx serializer
-- Default dashboard URL changed from `https://100.80.204.66:8443` → `http://100.80.204.66:9119` (then back to 8443 with proper URL separation in v0.1.16)
+- Default dashboard URL changed from `https://<gateway>:8443` → `http://<gateway>:9119` (then back to 8443 with proper URL separation in v0.1.16)
 
 ### Added
 - Diagnostic DebugLog entries for backend path audit (Phase 4A)

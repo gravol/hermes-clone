@@ -7,3 +7,11 @@ local.properties
 *.iml
 hermex-release.keystore
 keystore.properties
+
+# Internal working docs — kept local only
+AGENTS.md
+PROJECT_HANDOFF.md
+PROJECT_HANDOFF_CURRENT.md
+PLANNED_FIXES_*.md
+docs/
+research/
