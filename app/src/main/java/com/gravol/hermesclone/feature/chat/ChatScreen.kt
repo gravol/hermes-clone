@@ -1974,7 +1974,20 @@ fun ChatScreen(
                                 }
                             }
                         }
-                        itemsIndexed(state.messages, key = { _, msg -> msg.id }) { index, msg ->
+                        itemsIndexed(
+                            state.messages,
+                            key = { _, msg -> msg.id },
+                            // v0.2.22 PERF: let LazyColumn recycle only like-for-like
+                            // slots; without it a plain bubble can land in a rich
+                            // (thinking/tools) slot and pay full re-composition.
+                            contentType = { _, msg ->
+                                when {
+                                    msg.role == "user" -> "user"
+                                    msg.priorThinking.isNotEmpty() || msg.toolCalls.isNotEmpty() -> "rich"
+                                    else -> "plain"
+                                }
+                            },
+                        ) { index, msg ->
                             val sameSender = index > 0 && state.messages[index - 1].role == msg.role
 
                             // Live thinking block: shown ABOVE the assistant bubble
@@ -2430,7 +2443,11 @@ private fun MessageBubble(
 ) {
     // Root-space bounds of this bubble — the actions card is anchored to them,
     // exactly like the official menu that floats next to the pressed message.
-    var bubbleBounds by remember { mutableStateOf(Rect.Zero) }
+    // v0.2.22 PERF: deliberately NOT snapshot state. onGloballyPositioned fires
+    // on every position change — i.e. every scroll frame — and writing it to a
+    // mutableStateOf recomposed every visible bubble every frame of a scroll
+    // (the field 8.3% jank). A plain holder is read only on long-press.
+    val bubbleBounds = remember { arrayOf(Rect.Zero) }
     val isUser = message.role == "user"
     val alignment = if (isUser) Alignment.End else Alignment.Start
     // v0.6.0: assistant messages render as PLAIN text on the background
@@ -2457,12 +2474,12 @@ private fun MessageBubble(
                 modifier = bubbleWidthModifier
                     .clip(bubbleShape)
                     .background(if (isUser) bubbleColor else Color(0xFF272740))
-                    .onGloballyPositioned { bubbleBounds = it.boundsInRoot() }
+                    .onGloballyPositioned { bubbleBounds[0] = it.boundsInRoot() }
                     // v0.3.0: long-press opens the official message-actions card.
                     // A plain tap keeps the clone's existing quote-reply affordance.
                     .combinedClickable(
                         onClick = { onReply(message.id) },
-                        onLongClick = { onLongPress(message, bubbleBounds) },
+                        onLongClick = { onLongPress(message, bubbleBounds[0]) },
                     )
                     .padding(horizontal = if (isUser) 14.dp else 16.dp, vertical = if (isUser) 10.dp else 12.dp),
             ) {
@@ -2480,13 +2497,12 @@ private fun MessageBubble(
                 // it with a sliding tail silently changes the text under a reader
                 // who has scrolled away, even when no scroll command is issued.
                 val shownContent = message.content
-                val mdContent = if (!isUser && MathTransform.looksLikeMath(shownContent))
-                    MathTransform.toMarkdown(shownContent).also { t ->
-                        android.util.Log.d(
-                            "HermexMath",
-                            "transformed msg len=${shownContent.length} images=${Regex("!\\[math\\]\\(latex:").findAll(t).count()}",
-                        )
-                    }
+                // v0.2.22 PERF: looksLikeMath scans the whole text; memoize it
+                // per content so per-frame recompositions never re-run it.
+                val mathy = !isUser && remember(shownContent) {
+                    MathTransform.looksLikeMath(shownContent)
+                }
+                val mdContent = if (mathy) MathTransform.toMarkdown(shownContent)
                 else shownContent
                 val mdState = com.mikepenz.markdown.model.rememberMarkdownState(
                     content = mdContent,
