@@ -160,6 +160,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
@@ -2217,7 +2219,6 @@ fun ChatScreen(
                     cwd = state.currentCwd,
                     model = state.currentModel,
                     onRename = { newTitle -> viewModel.renameSession(newTitle) },
-                    onOpenModel = { showChatSettings = false; showModelPicker = true },
                     onOpenDetails = { showChatSettings = false; showSessionDetails = true },
                     onDismiss = { showChatSettings = false },
                 )
@@ -4801,7 +4802,6 @@ private fun ChatSettingsSheet(
     cwd: String?,
     model: String?,
     onRename: suspend (String) -> Boolean,
-    onOpenModel: () -> Unit,
     onOpenDetails: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -4861,10 +4861,8 @@ private fun ChatSettingsSheet(
                 // Official behavior: this row OPENS the Session Details sheet (not an inline expand).
                 SheetRow(Icons.Filled.BarChart, "Session details", null, onClick = onOpenDetails)
             }
-            Spacer(Modifier.height(16.dp))
-            TextButton(onClick = onOpenModel, modifier = Modifier.fillMaxWidth()) {
-                Text("Change model & thinking", color = Color(0xFF447CFF), fontFamily = ChatManrope, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-            }
+            // (v0.2.26: the home-grown "Change model & thinking" button was removed —
+            //  the official sheet ends at Session details; model picks live in drawer ▸ Model.)
         }
     }
 
@@ -4948,14 +4946,18 @@ private fun ChatHeader(
     Box(modifier.fillMaxWidth().padding(horizontal = 14.dp)) {
         ChatCircle(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Back", Color(0xFF0C1A3C), onBack)
         Column(Modifier.align(Alignment.TopCenter), horizontalAlignment = Alignment.CenterHorizontally) {
-            // The floating bot icon opens quick chat settings (official parity).
-            Box(Modifier.size(44.dp).clip(CircleShape).clickable(onClick = onSettingsClick),
-                contentAlignment = Alignment.Center) {
+            // Official parity: the TITLE PILL is the "Quick chat settings" control
+            // (verified via content-desc + bounds [453,239][627,311] on the official);
+            // the avatar above it is decoration only.
+            Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
                 BlobAvatar(recipeFor(if (bot == "default") "hermes" else bot.lowercase()), size = 44.dp)
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(name, modifier = Modifier.widthIn(max = 190.dp).clip(CircleShape)
-                    .background(Color(0xFF0C1A3C)).padding(horizontal = 12.dp, vertical = 4.dp),
+                    .background(Color(0xFF0C1A3C))
+                    .semantics { contentDescription = "Quick chat settings" }
+                    .clickable(onClick = onSettingsClick)
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
                     color = Color(0xFFF2F4FA), fontFamily = ChatManrope, fontWeight = FontWeight.SemiBold,
                     fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (thinking && !toolRunning) {
