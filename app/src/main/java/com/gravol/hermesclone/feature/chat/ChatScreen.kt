@@ -782,16 +782,12 @@ fun ChatScreen(
     }
 
     // ── DIAG (scroll-jump investigation 2026-11-08) ──────────────────────────
-    // Records the viewport's exact position whenever it MOVES during a turn (or
-    // while the user is scrolled away), so a visible "jump" can be read as a
-    // signed firstVisibleItemScrollOffset delta instead of guessed from pixels.
-    // Log-only: never scrolls, never changes layout.
-    // v0.2.19: also records the last item's measured SIZE and never goes blind
-    // after the turn ends. The old gate (`isStreaming || userScrolledUp`) is
-    // exactly what hid the end-of-turn jump: at completion streaming flips false
-    // with the reader at the bottom, so the trace stopped logging precisely when
-    // the tail->full re-measure and re-anchor happen.
+    // Samples the viewport while streaming or while the reader is away;
+    // unconditional per-frame journaling itself caused scroll jank.
+    // A completed turn at the bottom is no longer traced every frame; use a
+    // targeted diagnostic build if that transition needs frame-exact capture.
     LaunchedEffect(listState) {
+        var lastTraceMs = 0L
         snapshotFlow {
             val li = listState.layoutInfo
             val first = li.visibleItemsInfo.firstOrNull()
@@ -808,6 +804,13 @@ fun ChatScreen(
             .distinctUntilChanged()
             .collect { v ->
                 val s = viewModel.uiState
+                // This diagnostic used to format/redact/journal every scroll frame,
+                // including idle conversations. Keep a bounded trace during a
+                // stream or reader-away investigation, not on every fling frame.
+                if (!s.isStreaming && !userScrolledUp) return@collect
+                val now = android.os.SystemClock.uptimeMillis()
+                if (now - lastTraceMs < 250L) return@collect
+                lastTraceMs = now
                 DebugLog.log("TRACE", "ScrollPos",
                     "first=${v[0]} offset=${v[1]} last=${v[2]} lastBottom=${v[3]} " +
                     "viewport=${v[4]} lastSize=${v[5]} canFwd=${listState.canScrollForward} " +
@@ -2504,9 +2507,9 @@ private fun MessageBubble(
                 }
                 val mdContent = if (mathy) MathTransform.toMarkdown(shownContent)
                 else shownContent
-                val mdState = com.mikepenz.markdown.model.rememberMarkdownState(
+                val mdState = rememberCachedMarkdownState(
                     content = mdContent,
-                    immediate = true,
+                    streaming = message.isStreaming,
                 )
                 // v0.3.0: deliberately NO message-level SelectionContainer. Compose
                 // grabs the long-press for text selection and draws the system
