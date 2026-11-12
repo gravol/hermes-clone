@@ -45,8 +45,6 @@ object NotificationHelper {
     const val EXTRA_OPEN_ROUTE = "open_route"
     const val EXTRA_REPLY_SESSION = "reply_session"
     const val EXTRA_REPLY_TITLE = "reply_title"
-    const val EXTRA_NTFY_SERVER = "ntfy_server"
-    const val EXTRA_NTFY_TOPIC = "ntfy_topic"
     const val KEY_REPLY_TEXT = "reply_text"
 
     private const val ID_TURNS = 1001
@@ -200,7 +198,7 @@ object NotificationHelper {
         val title = sessionTitle.ifBlank { "Hermes" }
         val text = preview.take(200).ifBlank { "Turn finished" }
         // v0.1.901: one completed turn can reach this function twice — the app's own
-        // completion path, and the ntfy rail (`postNtfyMessage` delegates here for
+        // completion path (the old ntfy rail was removed in the official-parity pass)
         // hermex://session/ clicks). Jeff's shade showed both: two cards for the same
         // answer, because the two paths addressed the session by different ids (live sid
         // vs durable key). With the durable-key fix they share an id, but a second
@@ -326,82 +324,7 @@ object NotificationHelper {
         runCatching { NotificationManagerCompat.from(context).notify(ID_APPROVAL, notification) }
     }
 
-    /** Inline reply (ntfy path, v0.1.87): reply posts to the chat topic via
-     *  [NtfyClient]; the agent's answer comes back through the subscription. */
-    fun replyActionNtfy(context: Context, server: String, topic: String, title: String): NotificationCompat.Action {
-        val intent = Intent(context, NotificationReplyReceiver::class.java).apply {
-            putExtra(EXTRA_REPLY_SESSION, "ntfy:$topic")
-            putExtra(EXTRA_REPLY_TITLE, title)
-            putExtra(NotificationReplyService.EXTRA_NTFY_SERVER, server)
-            putExtra(NotificationReplyService.EXTRA_NTFY_TOPIC, topic)
-        }
-        val pendingIntent = PendingIntent.getBroadcast(
-            context,
-            (title.hashCode() and 0x7fffffff) + 2000,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
-        )
-        val remoteInput = RemoteInput.Builder(KEY_REPLY_TEXT)
-            .setLabel("Reply")
-            .build()
-        return NotificationCompat.Action.Builder(
-            android.R.drawable.ic_menu_send,
-            "Reply",
-            pendingIntent,
-        ).addRemoteInput(remoteInput).build()
-    }
 
-    /**
-     * A message arrived on the ntfy subscription (v0.1.87). Routing:
-     *  - link hermex://session/<key> → the chat-opens form (same id as the
-     *    live turn notification → a late server push REPLACES, never doubles)
-     *  - priority >= 4 → loud alerts channel
-     *  - everything else (cron output, infra notices) → cron channel
-     * Notification id is derived from the ntfy message id: idempotent per
-     * delivery (reconnect replays overwrite, they never stack).
-     */
-    fun postNtfyMessage(
-        context: Context,
-        topic: String,
-        msgId: String,
-        title: String,
-        body: String,
-        link: String?,
-        priority: Int,
-    ) {
-        ensureChannels(context)
-        val sessionId = link?.takeIf { it.startsWith("hermex://session/") }
-            ?.removePrefix("hermex://session/")
-        if (sessionId != null) {
-            // v0.1.901: the published title is "Turn finished | <chat title>". Passing it
-            // through as a SESSION title made this card read differently from the app's
-            // own completion card for the same turn — one of the two visible symptoms of
-            // the duplicate. Strip the prefix so both paths describe the chat.
-            val chatTitle = title.substringAfter(" | ").ifBlank { "Hermes" }
-            postTurnFinished(context, sessionId, chatTitle, body.ifBlank { "Turn finished" })
-            return
-        }
-        val text = body.take(400).ifBlank { title }
-        val label = title.ifBlank { "Hermes" }
-        val channelId = if (priority >= 4) CHANNEL_ALERTS else CHANNEL_CRON
-        val nid = 3000 + ((msgId.hashCode() and 0x7fffffff) % 9000)
-        // Tap target: cron output opens the Cron screen, everything else the
-        // session list. A server-published hermex://route/<name> click wins.
-        val route = link?.takeIf { it.startsWith("hermex://route/") }
-            ?.removePrefix("hermex://route/")
-            ?: if (topic == "hermes-cron") "cron" else "home"
-        val notification = NotificationCompat.Builder(context, channelId)
-            .setSmallIcon(android.R.drawable.stat_notify_chat)
-            .setContentTitle(label)
-            .setContentText(text)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
-            .setAutoCancel(true)
-            .setContentIntent(openRouteIntent(context, route, nid))
-            .setPriority(if (priority >= 4) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
-            .addAction(replyActionNtfy(context, NtfySubscriptionService.DEFAULT_SERVER, "hermes-in", label))
-            .build()
-        runCatching { NotificationManagerCompat.from(context).notify(nid, notification) }
-    }
 
     /** Deep-link route helper: chat/{sessionKey}/{encodedTitle} */
     fun chatRoute(sessionKey: String, title: String): String {

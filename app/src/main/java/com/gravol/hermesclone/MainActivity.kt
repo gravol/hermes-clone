@@ -40,10 +40,8 @@ import com.gravol.hermesclone.feature.botscreen.BotScreenScreen
 import com.gravol.hermesclone.feature.agents.AgentsScreen
 import com.gravol.hermesclone.feature.mcp.McpScreen
 import com.gravol.hermesclone.feature.onboarding.DashboardSetupScreen
-import com.gravol.hermesclone.feature.sessions.SessionsScreen
 import com.gravol.hermesclone.feature.sessions.SessionsViewModel
 import com.gravol.hermesclone.feature.settings.SettingsRepository
-import com.gravol.hermesclone.feature.settings.SettingsScreen
 import com.gravol.hermesclone.feature.soul.SoulScreen
 import com.gravol.hermesclone.feature.system.ConfigScreen
 import com.gravol.hermesclone.feature.system.CronScreen
@@ -85,14 +83,6 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         // Notification channels (turn-finished/cron/approval/reply)
         NotificationHelper.ensureChannels(this)
-        // v0.1.87: native ntfy subscription (push delivery rail) — follows the
-        // setting in Settings; starts on every launch, idempotent (startForegroundService).
-        kotlinx.coroutines.MainScope().launch {
-            val settings = SettingsRepository(applicationContext)
-            if (settings.ntfyEnabled.first() != false) {
-                com.gravol.hermesclone.notify.NtfySubscriptionService.start(applicationContext)
-            }
-        }
         // Android 13+ needs a runtime grant for notifications
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
@@ -349,13 +339,6 @@ fun HermexNavGraph(chatVmsHolder: ChatVmsHolder) {
         }
         composable("settings") {
             com.gravol.hermesclone.feature.settings.OfficialSettingsRoot(
-                onBack = { navController.popBackStack() },
-                onOpenDebug = { navController.navigate("settings-legacy") },
-            )
-        }
-        // Old flat settings kept only for its Debug Log tool (clone-only).
-        composable("settings-legacy") {
-            SettingsScreen(
                 onBack = { navController.popBackStack() },
             )
         }

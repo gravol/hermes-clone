@@ -364,36 +364,73 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
                             .first() ?: true
                     }.getOrDefault(true)
                     val cacheFile = com.gravol.hermesclone.feature.settings.HermesCache.sessionsFile(app, profile)
-                    fun parse(obj: kotlinx.serialization.json.JsonObject): Pair<List<JsonRpcClient.SessionInfo>, Int?> {
-                        val el = obj["sessions"]
-                        val list = if (el == null) emptyList() else runCatching {
+                    // Official "N more sessions" semantics (tcpdump-captured 2026-11-12,
+                    // exact-match derivation): the official paginates the profile
+                    // (archived=include&limit=100&offset=N… → the server's LISTABLE set,
+                    // 1,558 rows on default: subagent runs + compression continuations
+                    // already excluded) and counts client-side as
+                    // rows − {cron, oneshot, ntfy, webui} = 899; 899 − 5 visible =
+                    // "894 more" — matches the official on-device exactly. telegram and
+                    // tool rows COUNT (and are listed); unknown/rare sources drop out.
+                    fun decodeList(el: kotlinx.serialization.json.JsonElement?) =
+                        if (el == null) emptyList() else runCatching {
                             kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
                                 .decodeFromJsonElement(
                                     kotlinx.serialization.builtins.ListSerializer(JsonRpcClient.SessionInfo.serializer()), el)
                         }.getOrDefault(emptyList())
-                        val total = (obj["total"] as? kotlinx.serialization.json.JsonPrimitive)?.content?.toIntOrNull()
-                        return list.filter { (it.message_count ?: 0) > 0 } to total
+                    fun chatTotal(list: List<JsonRpcClient.SessionInfo>): Int = list.count {
+                        it.source !in setOf("cron", "oneshot", "ntfy", "webui")
                     }
-                    val r = com.gravol.hermesclone.core.network.DashboardApiClient.apiGet(
-                        "/api/sessions?limit=50&order=recent&profile=$profile")
-                    if (r !is com.gravol.hermesclone.core.network.NetworkResult.Success) {
+                    // Displayed rows additionally need a preview (a blank-title row was
+                    // the v0.2.12 bug); the COUNT above intentionally includes them.
+                    fun visible(list: List<JsonRpcClient.SessionInfo>) =
+                        list.filter { !it.preview.isNullOrBlank() }
+                    var offset = 0
+                    val all = ArrayList<JsonRpcClient.SessionInfo>()
+                    var failed = false
+                    while (true) {
+                        val r = com.gravol.hermesclone.core.network.DashboardApiClient.apiGet(
+                            "/api/sessions?archived=include&limit=100&offset=$offset&profile=$profile")
+                        if (r !is com.gravol.hermesclone.core.network.NetworkResult.Success) { failed = true; break }
+                        val obj = r.data.jsonObject
+                        val page = decodeList(obj["sessions"])
+                        all += page
+                        if (page.isEmpty()) break
+                        offset += 100
+                        // Official semantics: keep paging until an EMPTY page (its
+                        // include_pinned backfill can make the list longer than
+                        // `total`, so stopping at offset>=total loses rows — the
+                        // ±1 profile-count misses in the first G6 cut).
+                        if (offset >= 4000) break
+                    }
+                    if (failed) {
                         // Caching ▸ Chat List (real read path): when the network is down,
                         // render the last snapshot so the list is there before the network
                         // answers — the official's documented behaviour for this category.
                         if (cacheOn && cacheFile.exists()) {
-                            val obj = runCatching {
-                                kotlinx.serialization.json.Json.parseToJsonElement(cacheFile.readText()).jsonObject
-                            }.getOrNull()
-                            if (obj != null) return parse(obj)
+                            // New cache = JSON array; older caches were the raw
+                            // {sessions,total} page object — accept both.
+                            val el = runCatching {
+                                kotlinx.serialization.json.Json.parseToJsonElement(cacheFile.readText())
+                            }.getOrNull() ?: return emptyList<JsonRpcClient.SessionInfo>() to null
+                            val list = decodeList(
+                                if (el is kotlinx.serialization.json.JsonArray) el
+                                else (el as? kotlinx.serialization.json.JsonObject)?.get("sessions"))
+                            return visible(list) to chatTotal(list)
                         }
                         return emptyList<JsonRpcClient.SessionInfo>() to null
                     }
+                    // Pinned backfill can repeat a row across pages — dedupe by id.
+                    val uniq = all.distinctBy { it.id }
                     if (cacheOn) kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                        runCatching { cacheFile.writeBytes(r.data.toString().toByteArray()) }
+                        runCatching {
+                            cacheFile.writeText(
+                                kotlinx.serialization.json.Json.encodeToString(
+                                    kotlinx.serialization.builtins.ListSerializer(JsonRpcClient.SessionInfo.serializer()),
+                                    uniq))
+                        }
                     }
-                    // The official list never renders empty sessions (a message_count=0 row
-                    // showed as a blank line in v0.2.12's RPC-sourced list).
-                    return parse(r.data.jsonObject)
+                    return visible(uniq) to chatTotal(uniq)
                 }
                 val perBot = coroutineScope {
                     profiles.map { p ->
@@ -433,15 +470,20 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
     data class HomeFilters(
         val showMode: String = "All",                  // All | Unread | Working | Pinned
         val includeRoutineRuns: Boolean = false,       // Include ▸ Routine runs (source cron/oneshot)
+        val includeKanban: Boolean = false,            // Include ▸ Kanban workers (source kanban)
         val includeArchived: Boolean = false,          // Include ▸ Archived
         val selectedBots: Set<String>? = null,         // null = all agents
     ) {
         val includeSub: String
-            get() = when {
-                includeRoutineRuns && includeArchived -> "+ 2 kinds"
-                includeRoutineRuns -> "+ Routine runs"
-                includeArchived -> "+ Archived"
-                else -> "None"
+            get() {
+                val on = listOf(includeRoutineRuns, includeKanban, includeArchived).count { it }
+                return when {
+                    on == 0 -> "None"
+                    on == 1 && includeRoutineRuns -> "+ Routine runs"
+                    on == 1 && includeKanban -> "+ Kanban workers"
+                    on == 1 && includeArchived -> "+ Archived"
+                    else -> "+ $on kinds"
+                }
             }
         val agentsSub: String
             get() = when {
@@ -486,7 +528,7 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
     }
 
     /** Official Include-submenu subtitles: per-kind session totals ("N sessions"). Null = unknown yet. */
-    data class IncludeCounts(val routines: Int? = null, val archived: Int? = null)
+    data class IncludeCounts(val routines: Int? = null, val kanban: Int? = null, val archived: Int? = null)
     private val _includeCounts = MutableStateFlow(IncludeCounts())
     val includeCounts: StateFlow<IncludeCounts> = _includeCounts.asStateFlow()
 
@@ -507,10 +549,13 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
                 if (perBot.all { it == null } && perBot.isNotEmpty()) null
                 else perBot.sumOf { it ?: 0 }
             }
-            val routines = total("sources=cron%2Coneshot")
+            // Official Include▸Routine runs counts cron ONLY (715 on-device; oneshot's 96
+            // stay visible by default — verified 2026-11-12 against official 715 vs cron-811).
+            val routines = total("sources=cron")
+            val kanban = total("sources=kanban")
             val archived = total("archived=only")
-            _includeCounts.value = IncludeCounts(routines, archived)
-            DebugLog.log("INFO", "SessionsVM", "includeCounts routines=$routines archived=$archived")
+            _includeCounts.value = IncludeCounts(routines, kanban, archived)
+            DebugLog.log("INFO", "SessionsVM", "includeCounts routines=$routines kanban=$kanban archived=$archived")
         }
     }
 
@@ -572,8 +617,13 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
             // the base list — they appear only when the matching Include toggle is on. Proven
             // on-device: official default Include=None shows zero schedule rows; toggling on
             // shows them (REST extras below).
+            // v0.2.25 (G6): telegram rows are NOT hidden — the official counts and lists
+            // them (they simply weren't recent enough to appear in its 5-row peek).
+            // subagent rows no longer reach here at all: the server's listable set
+            // (exclude_children) already omits sub-agent runs.
             val base = g.sessions.filter { s ->
                 (f.includeRoutineRuns || (s.source != "cron" && s.source != "oneshot")) &&
+                    (f.includeKanban || s.source != "kanban") &&
                     (f.includeArchived || s.archived != true)
             }
             val merged = (base + (extras[g.name] ?: emptyList()))
@@ -827,7 +877,7 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
             val q = query.trim()
             if (q.length < 2) return@withContext emptyList()
             val r = com.gravol.hermesclone.core.network.DashboardApiClient.apiGet(
-                "/api/sessions/search?q=" + java.net.URLEncoder.encode(q, "UTF-8") + "&limit=20")
+                "/api/sessions/search?q=" + java.net.URLEncoder.encode(q, "UTF-8") + "&limit=50")
             if (r !is com.gravol.hermesclone.core.network.NetworkResult.Success)
                 return@withContext emptyList()
             val arr = (r.data as? kotlinx.serialization.json.JsonObject)

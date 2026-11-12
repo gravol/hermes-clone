@@ -178,7 +178,6 @@ import com.gravol.hermesclone.di.AppModule
 import com.gravol.hermesclone.feature.settings.SettingsRepository
 import com.gravol.hermesclone.AppState
 import com.gravol.hermesclone.assistant.TtsPlayback
-import com.gravol.hermesclone.feature.menu.WebuiMenuDrawer
 import com.gravol.hermesclone.ui.theme.LocalUiSurfaces
 import com.gravol.hermesclone.core.network.DashboardApiClient
 import com.gravol.hermesclone.core.network.DebugLog
@@ -234,7 +233,6 @@ fun ChatScreen(
     }
 
     val state = viewModel.uiState
-    val drawerState = rememberDrawerState(DrawerValue.Closed)
     // /new /reset — navigate to the freshly created session (v0.1.130).
     LaunchedEffect(viewModel.resetTargetSession) {
         val sid = viewModel.resetTargetSession ?: return@LaunchedEffect
@@ -1264,12 +1262,6 @@ fun ChatScreen(
 
     // Track composer focus separately (for other uses if needed)
 
-    WebuiMenuDrawer(
-        drawerState = drawerState,
-        onNavigate = onNavigate,
-        onOpenSession = onOpenSession,
-        onOpenChats = onOpenChats,
-    ) {
     if (showAttachSheet) {
         // v0.7.0: official-app style attach menu — Camera / Scan Document /
         // Photo Library / Files / Drawing / Voice Message.
@@ -2474,7 +2466,6 @@ fun ChatScreen(
 
     // ── Clarify is rendered INLINE above the composer (bottomBar), see
     // InlineClarifyCard below — not as a modal Dialog popup. ──
-    }
 }
 
 // ── LIVE THINKING TICKER ──

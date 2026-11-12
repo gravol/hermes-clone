@@ -54,6 +54,7 @@ import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FilterList
+import androidx.compose.material.icons.outlined.ViewKanban
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Schedule
@@ -165,11 +166,11 @@ fun HomeScreen(
     var query by rememberSaveable { mutableStateOf("") }
     var showFilters by rememberSaveable { mutableStateOf(false) }
     var filterSub by rememberSaveable { mutableStateOf<String?>(null) }
-    var showMore by rememberSaveable { mutableStateOf(false) }
-    var layoutMode by rememberSaveable { mutableStateOf(0) }
-    var showHidden by rememberSaveable { mutableStateOf(false) }
-    var windowDays by rememberSaveable { mutableStateOf(0) }  // 0 = no window (official default)
-    var sortByName by rememberSaveable { mutableStateOf(false) }
+    // Official has no layout/sort/window controls — fixed defaults (clean-copy pass).
+    val layoutMode = 0
+    val showHidden = false
+    val windowDays = 0
+    val sortByName = false
     val expand = remember { mutableStateMapOf<String, Int>() }   // key → visible children (-1 = all)
     var agentsCollapsed by rememberSaveable { mutableStateOf(false) }
     var seeded by rememberSaveable { mutableStateOf(false) }
@@ -401,24 +402,42 @@ fun HomeScreen(
                     }
                     val shown = if (layoutMode == 2) 0 else (expand[group.key]
                         ?: if (q.isNotEmpty()) -1 else 0)
+                    if (shown == 0 && group.total != null && group.total > 0 &&
+                        layoutMode != 2 && q.isEmpty()) {
+                        // Official shows "N more sessions ›" under COLLAPSED groups too
+                        // (verified: link-curator "101 more sessions", clerk "9 more").
+                        item(key = "morerow-${group.key}") {
+                            MoreSessionsRow(hidden = group.total, onClick = { expand[group.key] = PEEK })
+                        }
+                    }
                     if (shown != 0) {
                         val visibleKids = if (shown < 0) group.sessions
                         else group.sessions.take(shown)
                         itemsIndexed(visibleKids, key = { _, s -> "s-${s.id}" }) { index, session ->
-                            val matches = hitsById[session.id].orEmpty()
+                            // Official collapses many hits into AT MOST two
+                            // rows per session: the BEST message snippet
+                            // (user message preferred, else any non-tool) and
+                            // a single "Matched in tool activity" label when
+                            // any tool match exists. v0.2.25 G7.
+                            val hits = hitsById[session.id].orEmpty()
+                            val display = ArrayList<com.gravol.hermesclone.feature.sessions.ServerSearchHit>(2)
+                            (hits.firstOrNull { it.role == "user" && !it.snippet.isNullOrBlank() }
+                                ?: hits.firstOrNull { it.role != "tool" && !it.snippet.isNullOrBlank() })
+                                ?.let { display.add(it) }
+                            hits.firstOrNull { it.role == "tool" }?.let { display.add(it) }
                             Column {
                                 ChildRow(
                                     session = session,
                                     first = index == 0,
-                                    last = index == visibleKids.lastIndex && matches.isEmpty(),
+                                    last = index == visibleKids.lastIndex && display.isEmpty(),
                                     working = activeMap[session.id] == true || workingIds.contains(session.id),
                                     onClick = { onSessionTap(session) },
                                     onLongClick = { menuSession = session },
                                 )
-                                matches.forEachIndexed { mi, hit ->
+                                display.forEachIndexed { mi, hit ->
                                     MatchRow(
                                         hit = hit,
-                                        last = index == visibleKids.lastIndex && mi == matches.lastIndex,
+                                        last = index == visibleKids.lastIndex && mi == display.lastIndex,
                                         onClick = { onSessionTap(session) },
                                     )
                                 }
@@ -485,22 +504,12 @@ fun HomeScreen(
                         onDismiss = { showFilters = false },
                     )
                 }
-                Box {
-                    PillButton(onClick = { showMore = true }) {
-                        Icon(Icons.Outlined.MoreVert, "More options",
-                            tint = HermesTextPrimary, modifier = Modifier.size(21.dp))
-                    }
-                    if (showMore) HomeMoreMenu(
-                        onDismiss = { showMore = false },
-                        layout = layoutMode,
-                        onLayout = { layoutMode = it; showMore = false },
-                        sortByName = sortByName,
-                        onSortByName = { sortByName = it; showMore = false },
-                        windowDays = windowDays,
-                        onWindowDays = { windowDays = it; showMore = false },
-                        showHidden = showHidden,
-                        onShowHidden = { showHidden = it },
-                    )
+                // Official parity: "More options" (⋮) opens App Settings directly —
+                // verified on-device. The old Layout/Sort/Recent-sessions popup was
+                // Hermex legacy backbone, removed in the clean-copy pass (v0.2.26).
+                PillButton(onClick = onSettings) {
+                    Icon(Icons.Outlined.MoreVert, "More options",
+                        tint = HermesTextPrimary, modifier = Modifier.size(21.dp))
                 }
             }
         }
@@ -708,6 +717,10 @@ private fun FilterSubmenu(
                         counts.routines?.let { "$it sessions" }, filters.includeRoutineRuns,
                     ) { on -> onFilters(filters.copy(includeRoutineRuns = on)) }
                     MenuSwitchRow(
+                        "Kanban workers", Icons.Outlined.ViewKanban,
+                        counts.kanban?.let { "$it sessions" }, filters.includeKanban,
+                    ) { on -> onFilters(filters.copy(includeKanban = on)) }
+                    MenuSwitchRow(
                         "Archived", Icons.Outlined.Inventory,
                         counts.archived?.let { "$it sessions" }, filters.includeArchived,
                     ) { on -> onFilters(filters.copy(includeArchived = on)) }
@@ -734,57 +747,6 @@ private fun FilterSubmenu(
     }
 }
 
-@Composable
-private fun HomeMoreMenu(
-    onDismiss: () -> Unit,
-    onLayout: (Int) -> Unit,     // 0 bots+sessions, 1 sessions only, 2 bots only
-    layout: Int,
-    onSortByName: (Boolean) -> Unit,
-    sortByName: Boolean,
-    onWindowDays: (Int) -> Unit,
-    windowDays: Int,
-    showHidden: Boolean,
-    onShowHidden: (Boolean) -> Unit,
-) {
-    Popup(alignment = Alignment.TopEnd, properties = PopupProperties(focusable = true), onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .padding(top = 96.dp, end = 14.dp)
-                .width(272.dp)
-                .clip(RoundedCornerShape(18.dp))
-                .background(HermesSurfaceRaised)
-                .padding(vertical = 10.dp),
-        ) {
-            MenuSection("Layout")
-            MenuCheck("Bots and sessions", Icons.Filled.ViewList, layout == 0) { onLayout(0) }
-            MenuCheck("Sessions only", Icons.Filled.Chat, layout == 1) { onLayout(1) }
-            MenuCheck("Bots only", Icons.Filled.People, layout == 2) { onLayout(2) }
-            MenuSection("Sort bots")
-            MenuCheck("Recent activity", Icons.Filled.AccessTime, !sortByName) { onSortByName(false) }
-            MenuCheck("Name", Icons.Filled.SortByAlpha, sortByName) { onSortByName(true) }
-            MenuSection("Recent sessions")
-            MenuCheck("Last day", Icons.Filled.AccessTime, windowDays == 1) { onWindowDays(1) }
-            MenuCheck("Last 3 days", Icons.Filled.AccessTime, windowDays == 3) { onWindowDays(3) }
-            MenuCheck("Last week", Icons.Filled.AccessTime, windowDays == 7) { onWindowDays(7) }
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Filled.VisibilityOff, null, tint = HermesTextPrimary, modifier = Modifier.size(20.dp))
-                Spacer(Modifier.width(14.dp))
-                Text("Show hidden bots", color = HermesTextPrimary, fontSize = 16.sp, modifier = Modifier.weight(1f))
-                Switch(
-                    checked = showHidden,
-                    onCheckedChange = onShowHidden,
-                    colors = SwitchDefaults.colors(
-                        checkedTrackColor = HermesAccent,
-                        uncheckedTrackColor = HermesSurfaceActive,
-                    ),
-                )
-            }
-        }
-    }
-}
 
 @Composable
 private fun MenuRow(title: String, subtitle: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {

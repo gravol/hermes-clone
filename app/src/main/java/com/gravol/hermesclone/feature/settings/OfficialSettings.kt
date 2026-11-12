@@ -523,7 +523,7 @@ private fun parseColorHex(hex: String): Long {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun OfficialSettingsRoot(onBack: () -> Unit, onOpenDebug: () -> Unit) {
+fun OfficialSettingsRoot(onBack: () -> Unit) {
     var screen by remember { mutableStateOf<String?>(null) }
     val ctx = LocalContext.current
     val (appearanceMode, setAppearanceMode) = rememberKeyInt(SettingsKeys.APPEARANCE_MODE, 0)
@@ -628,18 +628,6 @@ fun OfficialSettingsRoot(onBack: () -> Unit, onOpenDebug: () -> Unit) {
             }
         }
 
-        // ── clone-only, documented deviations (field support) ──
-        Spacer(Modifier.height(16.dp))
-        SCard {
-            SRow(Icons.Outlined.BugReport, "Debug Log", chevron = false) { onOpenDebug() }
-            SCardDivider()
-            Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 14.dp)) {
-                Text("App Info", color = SSub, fontSize = 15.sp)
-                Text("Version: ${com.gravol.hermesclone.BuildConfig.VERSION_NAME}",
-                    color = SFoot, fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp))
-                Text("Server: ${DashboardApiClient.baseUrl()}", color = SFoot, fontSize = 12.sp)
-            }
-        }
     }
 }
 
