@@ -788,13 +788,15 @@ private fun MenuSection(title: String) {
 private fun MenuCheck(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, checked: Boolean, onClick: () -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 11.dp),
+            // Official submenu rows: 98px pitch (37dp).
+            .padding(horizontal = 16.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(icon, null, tint = HermesTextPrimary, modifier = Modifier.size(20.dp))
         Spacer(Modifier.width(14.dp))
         Text(label, color = HermesTextPrimary, fontSize = 16.sp, modifier = Modifier.weight(1f))
-        if (checked) Icon(Icons.Filled.Check, null, tint = HermesTextPrimary, modifier = Modifier.size(18.dp))
+        // Official checkmark carries the accessibility label "Selected" (verified on-device dump).
+        if (checked) Icon(Icons.Filled.Check, "Selected", tint = HermesTextPrimary, modifier = Modifier.size(18.dp))
     }
 }
 
