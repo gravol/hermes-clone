@@ -1050,6 +1050,7 @@ private fun SessionContextMenu(
     onDismiss: () -> Unit,
 ) {
     val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     var renaming by remember { mutableStateOf(false) }
     var draft by remember { mutableStateOf(session.title ?: "") }
     var busy by remember { mutableStateOf(false) }
@@ -1090,19 +1091,33 @@ private fun SessionContextMenu(
         return
     }
 
+    // Official parity (v0.2.26, verified on-device): long-press menu is
+    // Pin / Archive / Rename / Delete — no title, no Close button (tap-outside).
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = HermesSurfaceRaised,
-        title = { Text(session.title ?: session.id, color = HermesTextPrimary, fontSize = 17.sp) },
+        title = null,
         text = {
             Column {
-                TextButton(onClick = { renaming = true }, modifier = Modifier.fillMaxWidth()) {
-                    Text("Rename", color = HermesTextPrimary)
+                TextButton(onClick = {
+                    scope.launch {
+                        runCatching {
+                            val repo = com.gravol.hermesclone.feature.settings.SettingsRepository(
+                                ctx.applicationContext)
+                            repo.togglePinned(session.id)
+                        }
+                        onDismiss()
+                    }
+                }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Pin", color = HermesTextPrimary)
                 }
                 TextButton(onClick = {
-                    scope.launch { runCatching { rpc.sessionSetHidden(session.id, true) }; onDismiss() }
+                    scope.launch { runCatching { rpc.sessionArchive(session.id, true) }; onDismiss() }
                 }, modifier = Modifier.fillMaxWidth()) {
-                    Text("Hide", color = HermesTextPrimary)
+                    Text("Archive", color = HermesTextPrimary)
+                }
+                TextButton(onClick = { renaming = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Rename", color = HermesTextPrimary)
                 }
                 TextButton(onClick = {
                     scope.launch {
@@ -1115,6 +1130,5 @@ private fun SessionContextMenu(
             }
         },
         confirmButton = {},
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Close", color = HermesTextSecondary) } },
     )
 }
