@@ -53,6 +53,7 @@ import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Window
 import androidx.compose.material.icons.outlined.FilterList
 import androidx.compose.material.icons.outlined.ViewKanban
 import androidx.compose.material.icons.outlined.MoreVert
@@ -500,12 +501,6 @@ fun HomeScreen(
                                    else HermesTextPrimary,
                             modifier = Modifier.size(21.dp))
                     }
-                    if (showFilters) FiltersMenu(
-                        filters = homeFilters,
-                        onOpenSub = { filterSub = it },
-                        onReset = { viewModel.resetFilters() },
-                        onDismiss = { showFilters = false },
-                    )
                 }
                 // Official parity: "More options" (⋮) opens App Settings directly —
                 // verified on-device. The old Layout/Sort/Recent-sessions popup was
@@ -539,6 +534,14 @@ fun HomeScreen(
             )
         }
 
+        // FiltersMenu declared at ROOT scope: Popups anchor to their declaring
+        // composable; the official filter popup is window-centered (~x370..735).
+        if (showFilters) FiltersMenu(
+            filters = homeFilters,
+            onOpenSub = { filterSub = it },
+            onReset = { viewModel.resetFilters() },
+            onDismiss = { showFilters = false },
+        )
         filterSub?.let { which ->
             FilterSubmenu(
                 which = which,
@@ -593,16 +596,20 @@ private fun FiltersMenu(
     // every submenu row but the first eat touches in the window below.
     // v0.2.12: official parity — "Reset filters" row appears only when filters differ
     // from defaults (verified on-device: absent at All/None/All, present at "+ 2 kinds").
-    Popup(alignment = Alignment.TopEnd, properties = PopupProperties(focusable = true), onDismissRequest = onDismiss) {
+    // Official popup centers under the top bar (bounds x370..735 → center ≈ screen center).
+    Popup(alignment = Alignment.TopCenter, properties = PopupProperties(focusable = true), onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
-                .padding(top = 96.dp, end = 14.dp)
-                .width(280.dp)
+                // Measured onto official bounds (text x497 y283): top 64dp, nudge +9dp right.
+                .padding(top = 64.dp)
+                .offset(x = 9.dp)
+                // Official popup is compact: ~360px wide (137dp), rows ~98px pitch (37dp).
+                .width(140.dp)
                 .clip(RoundedCornerShape(18.dp))
                 .background(HermesSurfaceRaised)
                 .padding(vertical = 8.dp),
         ) {
-            MenuRow("Show", filters.showMode, Icons.Filled.Chat) { onOpenSub("show"); onDismiss() }
+            MenuRow("Show", filters.showMode, Icons.Outlined.Window) { onOpenSub("show"); onDismiss() }
             MenuRow("Include", filters.includeSub, Icons.Filled.Layers) { onOpenSub("include"); onDismiss() }
             MenuRow("Agents", filters.agentsSub, Icons.Filled.People) { onOpenSub("agents"); onDismiss() }
             if (filters != SessionsViewModel.HomeFilters()) {
@@ -613,12 +620,12 @@ private fun FiltersMenu(
                 Row(
                     modifier = Modifier.fillMaxWidth()
                         .clickable { onReset(); onDismiss() }
-                        .padding(horizontal = 16.dp, vertical = 11.dp),
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(Icons.Filled.History, null, tint = HermesTextPrimary, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(14.dp))
-                    Text("Reset filters", color = HermesTextPrimary, fontSize = 16.sp)
+                    Spacer(Modifier.width(10.dp))
+                    Text("Reset filters", color = HermesTextPrimary, fontSize = 15.sp, maxLines = 2)
                 }
             }
         }
@@ -681,8 +688,10 @@ private fun FilterSubmenu(
     Popup(alignment = Alignment.TopEnd, properties = PopupProperties(focusable = true), onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
-                .padding(top = 96.dp, end = 14.dp)
-                .width(300.dp)
+                // Official submenu right edge x≈925 → end padding ≈59dp.
+                .padding(top = 95.dp, end = 59.dp)
+                // Official submenu popup ~535px wide (204dp).
+                .width(205.dp)
                 .verticalScroll(rememberScrollState())
                 .clip(RoundedCornerShape(18.dp))
                 .background(HermesSurfaceRaised)
@@ -755,14 +764,15 @@ private fun FilterSubmenu(
 private fun MenuRow(title: String, subtitle: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            // Official main-popup rows are 37dp pitch (label+value stacked, no padding).
+            .padding(horizontal = 10.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(icon, null, tint = HermesTextPrimary, modifier = Modifier.size(20.dp))
-        Spacer(Modifier.width(14.dp))
+        Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
-            Text(title, color = HermesTextPrimary, fontSize = 16.sp)
-            Text(subtitle, color = HermesTextSecondary, fontSize = 12.sp)
+            Text(title, color = HermesTextPrimary, fontSize = 17.sp, lineHeight = 20.sp)
+            Text(subtitle, color = HermesTextSecondary, fontSize = 13.sp, lineHeight = 15.sp)
         }
         Icon(Icons.Filled.KeyboardArrowRight, null, tint = HermesTextSecondary, modifier = Modifier.size(18.dp))
     }
