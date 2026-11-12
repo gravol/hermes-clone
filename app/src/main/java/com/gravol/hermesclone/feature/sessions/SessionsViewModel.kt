@@ -816,9 +816,70 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
         )
     }
 
+    /**
+     * Server-side search (official parity, G5): GET /api/sessions/search
+     * matches message CONTENT including tool activity — invisible to the
+     * client-side title/preview filter (that's why "alive" missed "We
+     * alive?" while fuzzy-matching an unrelated "active" title).
+     */
+    suspend fun serverSearch(query: String): List<ServerSearchHit> =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val q = query.trim()
+            if (q.length < 2) return@withContext emptyList()
+            val r = com.gravol.hermesclone.core.network.DashboardApiClient.apiGet(
+                "/api/sessions/search?q=" + java.net.URLEncoder.encode(q, "UTF-8") + "&limit=20")
+            if (r !is com.gravol.hermesclone.core.network.NetworkResult.Success)
+                return@withContext emptyList()
+            val arr = (r.data as? kotlinx.serialization.json.JsonObject)
+                ?.get("results") as? kotlinx.serialization.json.JsonArray
+                ?: return@withContext emptyList()
+            fun kotlinx.serialization.json.JsonObject.str(vararg keys: String): String? {
+                for (k in keys) {
+                    val p = this[k] as? kotlinx.serialization.json.JsonPrimitive ?: continue
+                    val c = p.content
+                    if (!c.isNullOrBlank() && c != "null") return c
+                }
+                return null
+            }
+            fun kotlinx.serialization.json.JsonObject.dbl(vararg keys: String): Double? {
+                for (k in keys) {
+                    val p = this[k] as? kotlinx.serialization.json.JsonPrimitive ?: continue
+                    p.content?.toDoubleOrNull()?.let { return it }
+                }
+                return null
+            }
+            arr.mapNotNull { el ->
+                val o = el as? kotlinx.serialization.json.JsonObject ?: return@mapNotNull null
+                val sid = o.str("session_id", "id") ?: return@mapNotNull null
+                ServerSearchHit(
+                    sessionId = sid,
+                    title = o.str("title"),
+                    // The gateway marks matches with >>> <<<; the official
+                    // strips the markers and highlights the term instead —
+                    // strip here (highlighting may follow).
+                    snippet = o.str("snippet")?.replace(">>>", "")?.replace("<<<", ""),
+                    role = o.str("role"),
+                    profile = o.str("profile"),
+                    source = o.str("source"),
+                    lastActive = o.dbl("last_active", "started_at"),
+                )
+            }
+        }
+
     companion object {
         private const val LIST_TIER_START = 25
         /** Reuse a fresh Insights snapshot on re-open instead of refetching hundreds of KB. */
         private const val INSIGHTS_TTL_MS = 120_000L
     }
 }
+
+/** One /api/sessions/search hit (server-side content search). */
+data class ServerSearchHit(
+    val sessionId: String,
+    val title: String?,
+    val snippet: String?,
+    val role: String?,
+    val profile: String?,
+    val source: String?,
+    val lastActive: Double?,
+)

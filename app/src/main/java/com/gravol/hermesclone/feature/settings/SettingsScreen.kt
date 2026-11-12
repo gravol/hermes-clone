@@ -312,7 +312,7 @@ fun SettingsScreen(
             // v0.1.96: tool-call visibility (also toggled from the chat top bar)
             val savedShowToolCalls by settingsRepo.showToolCalls.collectAsState(initial = true)
             // v0.1.97: thinking visibility (also toggled from the chat top bar)
-            val savedShowThinking by settingsRepo.showThinking.collectAsState(initial = true)
+            val savedShowThinking by settingsRepo.showThinking.collectAsState(initial = false)
 
             // Live preview — see color changes instantly (v0.1.79)
             AppearancePreview(

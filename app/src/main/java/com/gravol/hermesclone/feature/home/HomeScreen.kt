@@ -29,6 +29,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccessTime
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Pending
@@ -175,6 +176,25 @@ fun HomeScreen(
     var menuSession by remember { mutableStateOf<SessionSummary?>(null) }
 
     val q = query.trim()
+    // v0.2.25 (G5): server-side content search — the gateway matches message
+    // CONTENT including tool activity, which the client-side title/preview
+    // filter can never see (official shows snippet + "Matched in tool
+    // activity" rows for these). Debounced so typing doesn't spam the API.
+    var serverHits by remember {
+        mutableStateOf<List<com.gravol.hermesclone.feature.sessions.ServerSearchHit>>(emptyList())
+    }
+    LaunchedEffect(q) {
+        if (q.length < 2) { serverHits = emptyList(); return@LaunchedEffect }
+        kotlinx.coroutines.delay(350)
+        serverHits = viewModel.serverSearch(q)
+    }
+    // Official nests search matches UNDER their session row inside the agent
+    // tree (snippet child rows; tool matches render as a "Matched in tool
+    // activity" label row without the raw output). v0.2.25.
+    val hitsById: Map<String, List<com.gravol.hermesclone.feature.sessions.ServerSearchHit>> =
+        remember(serverHits) { serverHits.groupBy { it.sessionId } }
+    val hitsByProfile: Map<String, List<com.gravol.hermesclone.feature.sessions.ServerSearchHit>> =
+        remember(serverHits) { serverHits.groupBy { it.profile ?: "default" } }
     val windowStartSec = remember(windowDays) {
         (System.currentTimeMillis() / 1000.0) - windowDays.coerceAtLeast(1) * 86_400.0
     }
@@ -221,6 +241,32 @@ fun HomeScreen(
                         unread = unreadNow,
                         sessionSource = info.source,
                     )
+                }
+                // v0.2.25: merge server content-search hits for this profile
+                // into the tree (official: matched sessions appear nested
+                // under their agent, even when the title never matched).
+                .let { base ->
+                    if (q.isEmpty()) base
+                    else {
+                        val have = base.map { it.id }.toSet()
+                        val extra = (hitsByProfile[b.name] ?: emptyList())
+                            .filter { it.sessionId !in have }
+                            .distinctBy { it.sessionId }
+                            .map { hit ->
+                                val readAt = readMap[hit.sessionId]
+                                val unreadNow = readAt?.let { (hit.lastActive ?: 0.0) > it } ?: true
+                                SessionSummary(
+                                    id = hit.sessionId,
+                                    title = hit.title ?: hit.sessionId,
+                                    source = b.name,
+                                    lastActive = hit.lastActive,
+                                    lastActivityAt = hit.lastActive,
+                                    preview = hit.snippet,
+                                    unread = unreadNow,
+                                )
+                            }
+                        base + extra
+                    }
                 }
             // Bots with no matching sessions hide while searching; visible when idle ("say hi").
             if (sessions.isEmpty() && (q.isNotEmpty() || windowDays != 0 && b.lastSessionTs == null)) return@mapNotNull null
@@ -303,7 +349,8 @@ fun HomeScreen(
         ) {
             // Official hides the "Agents" heading while a search returns nothing:
             // mb_fu's first content is the mascot at 135dp, no header row.
-            val searchingEmpty = q.isNotEmpty() && displayGroups.isEmpty() && !state.isLoading
+            val searchingEmpty = q.isNotEmpty() && displayGroups.isEmpty() &&
+                serverHits.isEmpty() && !state.isLoading
             if (!searchingEmpty) item {
                 Row(
                     modifier = Modifier
@@ -352,19 +399,30 @@ fun HomeScreen(
                             },
                         )
                     }
-                    val shown = if (layoutMode == 2) 0 else (expand[group.key] ?: 0)
+                    val shown = if (layoutMode == 2) 0 else (expand[group.key]
+                        ?: if (q.isNotEmpty()) -1 else 0)
                     if (shown != 0) {
                         val visibleKids = if (shown < 0) group.sessions
-                            else group.sessions.take(shown)
+                        else group.sessions.take(shown)
                         itemsIndexed(visibleKids, key = { _, s -> "s-${s.id}" }) { index, session ->
-                            ChildRow(
-                                session = session,
-                                first = index == 0,
-                                last = index == visibleKids.lastIndex,
-                                working = activeMap[session.id] == true || workingIds.contains(session.id),
-                                onClick = { onSessionTap(session) },
-                                onLongClick = { menuSession = session },
-                            )
+                            val matches = hitsById[session.id].orEmpty()
+                            Column {
+                                ChildRow(
+                                    session = session,
+                                    first = index == 0,
+                                    last = index == visibleKids.lastIndex && matches.isEmpty(),
+                                    working = activeMap[session.id] == true || workingIds.contains(session.id),
+                                    onClick = { onSessionTap(session) },
+                                    onLongClick = { menuSession = session },
+                                )
+                                matches.forEachIndexed { mi, hit ->
+                                    MatchRow(
+                                        hit = hit,
+                                        last = index == visibleKids.lastIndex && mi == matches.lastIndex,
+                                        onClick = { onSessionTap(session) },
+                                    )
+                                }
+                            }
                         }
                         if (group.sessions.size > shown && shown > 0) {
                             item(key = "more-${group.key}") {
@@ -801,6 +859,53 @@ private fun AgentRow(group: HomeAgentGroup, expanded: Boolean, onClick: () -> Un
         }
         Spacer(Modifier.width(6.dp))
         Icon(Icons.Filled.KeyboardArrowRight, null, tint = HermesTextTertiary, modifier = Modifier.size(18.dp))
+    }
+}
+
+/**
+ * v0.2.25: one search-match child row nested under its session in the agent
+ * tree. Message matches show the snippet (markers already stripped); tool
+ * matches render the official "Matched in tool activity" label with a tool
+ * glyph and NO raw output (verified against the official app).
+ */
+@Composable
+private fun MatchRow(
+    hit: com.gravol.hermesclone.feature.sessions.ServerSearchHit,
+    last: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(end = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        val railX = with(LocalDensity.current) { 40.dp.toPx() }
+        val dotX = with(LocalDensity.current) { 61.dp.toPx() }
+        Canvas(Modifier.width(73.dp).height(34.dp)) {
+            val mid = size.height / 2
+            val stroke = 1.dp.toPx()
+            val color = HermesRail
+            drawLine(color, Offset(railX, 0f), Offset(railX, if (last) mid else size.height), stroke)
+            drawLine(color, Offset(railX, mid), Offset(dotX - 2.dp.toPx(), mid), stroke)
+        }
+        Spacer(Modifier.width(16.dp))
+        if (hit.role == "tool") {
+            Icon(
+                Icons.Filled.Build, null,
+                modifier = Modifier.size(14.dp), tint = HermesTextSecondary,
+            )
+            Spacer(Modifier.width(8.dp))
+            Text("Matched in tool activity", color = HermesTextSecondary, fontSize = 15.sp)
+        } else {
+            Text(
+                hit.snippet ?: "",
+                color = HermesTextSecondary, fontSize = 15.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+        }
     }
 }
 

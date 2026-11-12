@@ -80,7 +80,9 @@ class SettingsRepository(context: Context) {
 
     /** Show thinking boxes in chat (v0.1.97). Off hides finished thinking box,
      *  live THINKING section and ticker; tools + response stay. */
-    val showThinking: Flow<Boolean> = store.getBoolean(KEY_SHOW_THINKING).map { it ?: true }
+    // v0.2.25: default OFF — the official app renders no thinking UI at all
+    // (no Thought/Thinking strings exist in its APK); the toggle stays for parity-flexibility.
+    val showThinking: Flow<Boolean> = store.getBoolean(KEY_SHOW_THINKING).map { it ?: false }
 
     /** Locally pinned session ids (desktop-style client-side pinning). */
     val pinnedSessionIds: Flow<Set<String>> = store.getStringSet(KEY_PINNED_SESSIONS)

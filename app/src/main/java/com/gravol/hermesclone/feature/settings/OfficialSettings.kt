@@ -1217,7 +1217,7 @@ private fun ChatSettingsScreen(onBack: () -> Unit) {
     val (dismissKb, setDismissKb) = rememberKeyBool(SettingsKeys.DISMISS_KEYBOARD, false)
     val (showToolCalls, setShowToolCalls) = rememberKeyBool("show_tool_calls", true)
     val (showDeviceActions, setShowDeviceActions) = rememberKeyBool(SettingsKeys.SHOW_DEVICE_ACTIONS, true)
-    val (showThinking, setShowThinking) = rememberKeyBool("show_thinking", true)
+    val (showThinking, setShowThinking) = rememberKeyBool("show_thinking", false)
     val (foldTurns, setFoldTurns) = rememberKeyBool("fold_finished_turns", true)
     val tick = rememberTick()
 

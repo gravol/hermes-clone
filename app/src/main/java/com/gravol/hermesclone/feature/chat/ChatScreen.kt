@@ -306,7 +306,7 @@ fun ChatScreen(
     }
     val showToolCalls by settingsRepo.showToolCalls.collectAsState(initial = true)
     // v0.1.97: thinking visibility toggle — same pattern (tools + response stay).
-    val showThinking by settingsRepo.showThinking.collectAsState(initial = true)
+    val showThinking by settingsRepo.showThinking.collectAsState(initial = false)
     // v0.5.4: spoken assistant replies toggle (Settings > Phone Assistant).
     val voiceRepliesOn by settingsRepo.voiceRepliesEnabled.collectAsState(initial = false)
 
@@ -331,6 +331,9 @@ fun ChatScreen(
     // V4 official parity: finished turns collapse to a one-line summary row;
     // this tracks which collapsed rows the user tapped open (msg id → expanded).
     val expandedTurns = remember { androidx.compose.runtime.mutableStateMapOf<String, Boolean>() }
+    // v0.2.25: second expansion level (green summary sub-pill -> tool rows),
+    // matching the official gray-pill -> green-pill -> rows hierarchy.
+    val expandedTurnDetails = remember { androidx.compose.runtime.mutableStateMapOf<String, Boolean>() }
     LaunchedEffect(state.isStreaming) {
         if (!state.isStreaming) {
             streamTokPerSec = 0f
@@ -1890,18 +1893,40 @@ fun ChatScreen(
             // Official turn grouping: consecutive assistant messages between
             // user messages are ONE turn; >1 tool call total -> single
             // collapsed row at the first tool message, rest suppressed.
+            // v0.2.25: the builder also records the turn's wall-clock bounds
+            // (user message ts -> last message ts of the turn) — the official
+            // app derives the "Worked for X" duration from exactly these
+            // timestamps on history reload (verified against the official
+            // APK: 92.2s -> "1 min, 32 sec", 34018s -> "9 hr, 26 min").
             val turnGroupInfo: Map<Int, TurnGroupInfo> = remember(state.messages) {
                 val out = HashMap<Int, TurnGroupInfo>()
                 val anchorOf = HashMap<Int, Int>()
                 val toolMap = HashMap<Int, MutableList<UiToolCall>>()
+                val startTs = HashMap<Int, Long>()
+                val endTs = HashMap<Int, Long>()
                 var a = -1
+                var userTs: Long? = null
+                var turnLastTs: Long? = null
                 state.messages.forEachIndexed { i, m ->
                     when {
-                        m.role == "user" -> a = -1
-                        m.role == "assistant" && m.toolCalls.isNotEmpty() -> {
-                            if (a == -1) a = i
-                            anchorOf[i] = a
-                            toolMap.getOrPut(a) { ArrayList() }.addAll(m.toolCalls)
+                        m.role == "user" -> {
+                            a = -1
+                            userTs = m.timestamp
+                            turnLastTs = m.timestamp
+                        }
+                        m.role == "assistant" -> {
+                            if (a == -1 && m.toolCalls.isNotEmpty()) {
+                                a = i
+                                startTs[i] = userTs ?: m.timestamp
+                            }
+                            if (a != -1) {
+                                turnLastTs = maxOf(turnLastTs ?: m.timestamp, m.timestamp)
+                                endTs[a] = turnLastTs!!
+                            }
+                            if (a != -1 && m.toolCalls.isNotEmpty()) {
+                                anchorOf[i] = a
+                                toolMap.getOrPut(a) { ArrayList() }.addAll(m.toolCalls)
+                            }
                         }
                     }
                 }
@@ -1909,7 +1934,10 @@ fun ChatScreen(
                     if (tools.isNotEmpty()) {
                         val streaming = state.messages.listIterator(anchorIdx)
                             .asSequence().takeWhile { it.role != "user" }.any { it.isStreaming }
-                        out[anchorIdx] = TurnGroupInfo(true, state.messages[anchorIdx].id, tools.toList(), streaming)
+                        out[anchorIdx] = TurnGroupInfo(
+                            true, state.messages[anchorIdx].id, tools.toList(), streaming,
+                            turnStartMs = startTs[anchorIdx], turnEndMs = endTs[anchorIdx],
+                        )
                         anchorOf.filterValues { it == anchorIdx }.keys.filter { it != anchorIdx }
                             .forEach { absorbed -> out[absorbed] = TurnGroupInfo(false, "", emptyList(), false) }
                     }
@@ -2062,18 +2090,35 @@ fun ChatScreen(
                                     ToolCallList(toolCalls = msg.toolCalls)
                                 } else if (gi.anchor) {
                                     val turnExpanded = expandedTurns[gi.key] == true
+                                    // v0.2.25: official 2-level expansion —
+                                    // gray turn pill expands to ONE green
+                                    // summary sub-pill; the sub-pill expands
+                                    // to the individual tool rows.
+                                    val detailExpanded = expandedTurnDetails[gi.key] == true
                                     // v0.2.6: remember-per-key so the row stays
                                     // skippable across stream flushes.
                                     val onToggleStable = remember(gi.key) {
                                         { expandedTurns[gi.key] = expandedTurns[gi.key] != true }
+                                    }
+                                    val onDetailToggleStable = remember(gi.key) {
+                                        { expandedTurnDetails[gi.key] = expandedTurnDetails[gi.key] != true }
                                     }
                                     TurnSummaryRow(
                                         toolCalls = gi.tools,
                                         streaming = gi.streaming,
                                         expanded = turnExpanded,
                                         onToggle = onToggleStable,
+                                        turnStartMs = gi.turnStartMs,
+                                        turnEndMs = gi.turnEndMs,
                                     )
-                                    if (turnExpanded) ToolCallList(toolCalls = gi.tools)
+                                    if (turnExpanded) {
+                                        TurnRunSummaryPill(
+                                            label = turnSummaryLabel(gi.tools.map { it.toolName }),
+                                            expanded = detailExpanded,
+                                            onToggle = onDetailToggleStable,
+                                        )
+                                        if (detailExpanded) ToolCallList(toolCalls = gi.tools, flat = true)
+                                    }
                                 }
                             }
                             // v0.8.0: the CURRENT thinking renders INLINE in the
@@ -2628,25 +2673,50 @@ private fun MessageBubble(
 // bottom sheet. The old boxed "TOOLS · n" container is gone: the row itself is
 // the affordance, matching the official client's density.
 
-/** Past-tense verb per tool, shown bold in the row (official "Ran command"). */
-internal fun toolVerb(toolName: String): String = when (toolName) {
-    "terminal" -> "Ran command"
-    "execute_code" -> "Ran code"
-    "read_file" -> "Read"
-    "write_file" -> "Wrote"
-    "patch", "edit_file" -> "Edited"
-    "search_files" -> "Searched"
-    "web_search" -> "Searched web"
-    "web_extract" -> "Fetched"
-    "browser_exec" -> "Drove browser"
-    "delegate_task" -> "Delegated"
-    "vision_analyze" -> "Analyzed image"
-    "session_search" -> "Searched sessions"
-    "memory" -> "Memory"
-    "skill_view", "skill_manage" -> "Skill"
-    "text_to_speech" -> "Spoke"
-    "cronjob_manage" -> "Cron"
-    else -> "Ran $toolName"
+/**
+ * Official row-label registry copied from the decompiled APK (t8g.java):
+ * enum entries carry (aliases, "Running …" present, "Ran …" past) and
+ * everything else is HUMANIZED — underscores to spaces, first letter
+ * capital (official rows literally read "Skill view {...}" and
+ * "Mcp neo4j memory query graph {...}"). v0.2.25.
+ */
+internal fun toolVerb(toolName: String, running: Boolean = false): String {
+    val n = toolName.lowercase()
+    val past: String? = when {
+        n == "terminal" || n == "bash" || n == "exec_command" || n == "shell" -> "Ran command"
+        n == "web_search" || n == "search_query" || n == "browser_search" -> "Searched the web"
+        n == "web_extract" || n == "web_fetch" -> "Read webpage"
+        n == "browser_exec" || n == "browser" -> "Used browser"
+        n == "read_file" || n == "open_file" -> "Read file"
+        n == "write_file" || n == "edit_file" || n == "apply_patch" || n == "patch" -> "Edited files"
+        n == "imagegen" || n == "image_generate" || n == "generate_image" -> "Created image"
+        n == "view_image" -> "Viewed image"
+        n == "todo_list" || n == "todo" -> "Updated tasks"
+        n == "request_user_input" -> "Asked a question"
+        n == "spawn_agent" || n == "delegate" || n == "delegate_task" -> "Delegated task"
+        n == "wait" || n == "wait_agent" -> "Waited for an update"
+        else -> null
+    }
+    if (past != null) {
+        return if (!running) past else when (past) {
+            "Ran command" -> "Running command"
+            "Searched the web" -> "Searching web"
+            "Read webpage" -> "Reading webpage"
+            "Used browser" -> "Using browser"
+            "Read file" -> "Reading file"
+            "Edited files" -> "Editing files"
+            "Created image" -> "Creating image"
+            "Viewed image" -> "Viewing image"
+            "Updated tasks" -> "Updating tasks"
+            "Asked a question" -> "Asking a question"
+            "Delegated task" -> "Delegating task"
+            "Waited for an update" -> "Waiting for update"
+            else -> past
+        }
+    }
+    // Humanize fallback: collapse underscores to spaces, capitalize first.
+    val h = n.trim('_').replace(Regex("_+"), " ")
+    return h.replaceFirstChar { it.uppercaseChar() }
 }
 
 @Composable
@@ -2792,33 +2862,86 @@ private fun ThoughtCard(text: String, streaming: Boolean = false) {
  * tool rows. "Command" is a toolName heuristic (shell-like tools); the
  * gateway does not label commands differently from other tool calls.
  */
+/**
+ * Official expanded-turn green sub-pill (v0.2.25): one per turn, carrying the
+ * bucket label ("Ran a command and made 2 tool calls"); tapping it expands
+ * the individual tool rows. Styling follows the official tool-pill palette
+ * (bg #1D5945, ink #30D158, check-circle icon, trailing chevron).
+ */
+@Composable
+private fun TurnRunSummaryPill(
+    label: String,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp, end = 0.dp, top = 2.dp, bottom = 3.dp)
+            .clip(CircleShape)
+            .background(Color(0xFF1D5945).copy(alpha = 0.55f))
+            .border(1.dp, Color(0xFF30D158).copy(alpha = 0.35f), CircleShape)
+            .clickable(onClick = onToggle)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Filled.CheckCircle, null,
+            modifier = Modifier.size(16.dp), tint = Color(0xFF30D158),
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            text = label,
+            fontFamily = ChatManrope,
+            fontSize = 13.5.sp,
+            color = Color(0xFF30D158),
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Icon(
+            imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = Color(0xFF30D158).copy(alpha = 0.7f),
+        )
+    }
+}
+
 @Composable
 private fun TurnSummaryRow(
     toolCalls: List<UiToolCall>,
     streaming: Boolean,
     expanded: Boolean,
     onToggle: () -> Unit,
+    turnStartMs: Long? = null,
+    turnEndMs: Long? = null,
 ) {
-    val commandNames = listOf("bash", "shell", "terminal", "exec", "execute", "run_command", "subprocess")
-    val commands = toolCalls.count { tc -> commandNames.any { tc.toolName.lowercase().contains(it) } }
-    val tools = toolCalls.size - commands
-    // Official collapsed-row wording: live = "Ran N commands and made M tool calls"
-    // (blue, spinner); finished = "Worked for X min, Y sec · N tools" (grey, checklist).
-    val liveText = when {
-        commands > 0 && tools > 0 -> "Ran $commands command${if (commands == 1) "" else "s"} and made $tools tool call${if (tools == 1) "" else "s"}"
-        commands > 0 -> "Ran $commands command${if (commands == 1) "" else "s"}"
-        else -> "Made $tools tool call${if (tools == 1) "" else "s"}"
-    }
+    // v0.2.25: official parity. Category phrases (plurals chat_tool_run_*)
+    // joined by the locale list formatter, first-occurrence bucket order —
+    // "Read a file, ran a command, and made 2 tool calls". Live and done
+    // share the phrase builder; done wraps it in "Worked for <dur> · N tools"
+    // and falls back to plain "Worked" when no duration is known (the
+    // official app NEVER shows "Worked for 0 sec").
+    val label = turnSummaryLabel(toolCalls.map { it.toolName })
     val starts = toolCalls.mapNotNull { it.startedAt }
     val ends = toolCalls.mapNotNull { it.completedAt }
-    val secs = if (starts.isNotEmpty()) (((ends.maxOrNull() ?: System.currentTimeMillis()) - starts.min()) / 1000L) else 0L
-    val dur = when {
-        secs >= 3600 -> "%d hr, %d min".format(secs / 3600, (secs % 3600) / 60)
-        secs >= 60 -> "%d min, %d sec".format(secs / 60, secs % 60)
-        else -> "$secs sec"
-    }
+    val liveSecs: Long? = if (starts.isNotEmpty())
+        (((ends.maxOrNull() ?: System.currentTimeMillis()) - starts.min()) / 1000L)
+    else null
+    // History reload: official derives duration from the turn's message
+    // timestamps (user ts -> last message ts).
+    val histSecs: Long? =
+        if (turnStartMs != null && turnEndMs != null && turnEndMs > turnStartMs)
+            ((turnEndMs - turnStartMs + 500) / 1000L) else null
+    val dur = if (streaming) formatWorkedDuration(liveSecs ?: histSecs)
+              else formatWorkedDuration(histSecs ?: liveSecs)
     val total = toolCalls.size
-    val doneText = "Worked for $dur \u00b7 $total tool${if (total == 1) "" else "s"}"
+    // Official composes the pill as text + a separate "· N tools" counter
+    // (sgg.java ukg.d → tkg(skg.b, n)); with no duration that reads
+    // "Worked · N tools", never "Worked for 0 sec".
+    val toolsSuffix = if (total > 0) " \u00b7 $total tool${if (total == 1) "" else "s"}" else ""
+    val doneText = (if (dur != null) "Worked for $dur" else "Worked") + toolsSuffix
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -2837,7 +2960,7 @@ private fun TurnSummaryRow(
         }
         Spacer(Modifier.width(10.dp))
         Text(
-            text = if (streaming) liveText else doneText,
+            text = if (streaming) label else doneText,
             fontFamily = ChatManrope,
             fontSize = 14.sp,
             color = if (streaming) Color(0xFF447CFF) else Color(0xFF8A8AA6),
@@ -2858,6 +2981,11 @@ private fun TurnSummaryRow(
 private fun ToolCallList(
     toolCalls: List<UiToolCall>,
     segments: List<ThinkingSeg> = emptyList(),
+    // v0.2.25: the green sub-pill expansion shows ONE ROW PER TOOL CALL
+    // (verified against the official app: "Skill view {...}", "Ran command
+    // python3 -c ...", "Mcp neo4j memory query graph {...}" as separate
+    // rows). Grouping stays for the legacy flat path.
+    flat: Boolean = false,
 ) {
     var detail by remember { mutableStateOf<UiToolCall?>(null) }
     val now by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -2867,12 +2995,12 @@ private fun ToolCallList(
     }
     // Official groups CONSECUTIVE same-kind calls: "Ran N commands" /
     // "Made N tool calls" (tap to expand); singles render one row each.
-    val groups: List<Pair<Boolean, List<UiToolCall>>> = remember(toolCalls) {
+    val groups: List<Pair<Boolean, List<UiToolCall>>> = remember(toolCalls, flat) {
         val out = mutableListOf<Pair<Boolean, MutableList<UiToolCall>>>()
         toolCalls.forEach { tc ->
             val c = isCmd(tc)
             val last = out.lastOrNull()
-            if (last != null && last.first == c) last.second.add(tc) else out.add(c to mutableListOf(tc))
+            if (!flat && last != null && last.first == c) last.second.add(tc) else out.add(c to mutableListOf(tc))
         }
         out.map { it.first to it.second.toList() }
     }
@@ -3001,7 +3129,7 @@ private fun ToolCallRow(toolCall: UiToolCall, now: Long, onTap: () -> Unit) {
             }
             Spacer(Modifier.width(9.dp))
             Text(
-                text = toolVerb(toolCall.toolName),
+                text = toolVerb(toolCall.toolName, running),
                 style = MaterialTheme.typography.bodySmall,
                 fontWeight = FontWeight.SemiBold,
                 color = Color(0xFF30D158),
@@ -4695,7 +4823,7 @@ private fun ChatSettingsSheet(
     val repo = remember { com.gravol.hermesclone.feature.settings.SettingsRepository(ctx.applicationContext) }
     val scope = rememberCoroutineScope()
     val showToolCalls by repo.showToolCalls.collectAsState(initial = true)
-    val showThinking by repo.showThinking.collectAsState(initial = true)
+    val showThinking by repo.showThinking.collectAsState(initial = false)
     val foldTurns by repo.foldFinishedTurns.collectAsState(initial = true)
     val linkPreviews by repo.linkPreviews.collectAsState(initial = true)
     val deviceActions by repo.deviceActions.collectAsState(initial = true)
@@ -4884,4 +5012,11 @@ private fun ChatHeader(
 
 
 /** Turn-group metadata for the official collapsed turn row (see turnGroupInfo). */
-private class TurnGroupInfo(val anchor: Boolean, val key: String, val tools: List<UiToolCall>, val streaming: Boolean)
+private class TurnGroupInfo(
+    val anchor: Boolean,
+    val key: String,
+    val tools: List<UiToolCall>,
+    val streaming: Boolean,
+    val turnStartMs: Long? = null,
+    val turnEndMs: Long? = null,
+)
