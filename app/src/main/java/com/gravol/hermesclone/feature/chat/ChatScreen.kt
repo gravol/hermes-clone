@@ -1654,13 +1654,7 @@ fun ChatScreen(
                                 inner()
                             } })
                     }
-                    val modelChip = @Composable {
-                        Row(Modifier.clip(CircleShape).clickable { showModelPicker = true }.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Outlined.Psychology, null, tint = Color(0xFFA2A4B0), modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(5.dp))
-                            Text(state.currentModel?.let { shortModelName(it) } ?: "Model", color = Color(0xFFA2A4B0), fontSize = 13.sp, maxLines = 1, fontFamily = ChatManrope)
-                        }
-                    }
+                    // (modelChip removed — official composer has no model chip.)
                     // Official "EDITING EARLIER MESSAGE" bar above the composer,
                     // shown while a message is being edited (Edit & resend).
                     editingMessage?.let { em ->
@@ -1686,9 +1680,10 @@ fun ChatScreen(
                             Modifier.fillMaxWidth().padding(start = 6.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
+                            // Official parity (v0.2.26): composer row is attach … mic — the
+                            // home-grown Model chip is removed (official composer has none;
+                            // model lives in drawer ▸ Model / Quick chat settings).
                             attach()
-                            Spacer(Modifier.width(4.dp))
-                            modelChip()
                             Spacer(Modifier.weight(1f))
                             microphone()
                             if (hasSend) {
@@ -2200,7 +2195,7 @@ fun ChatScreen(
                         when (action) {
                             "Routines" -> onNavigate("cron")
                             "Artifacts" -> onNavigate("hub-artifacts")
-                            "Bot Screen" -> onNavigate("bothub")
+                            // (Bot Screen row removed — the official chat menu has no such entry.)
                             "Live Mode" -> onNavigate("hub-voice")
                             "Terminal" -> onNavigate("botscreen")
                             "Archive" -> {
@@ -4987,10 +4982,11 @@ private fun ChatHeader(
             DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, modifier = Modifier.width(196.dp).clip(RoundedCornerShape(20.dp)).background(Color(0xFF0C1A3C))) {
                 val items = listOf("Live Mode" to Icons.Outlined.GraphicEq, "Terminal" to Icons.Outlined.Terminal,
                     "Execution" to Icons.Outlined.Terminal, "Routines" to Icons.Outlined.Schedule,
-                    "Artifacts" to Icons.Outlined.Inventory2, "Bot Screen" to Icons.Filled.Devices,
+                    "Artifacts" to Icons.Outlined.Inventory2,
                     "Archive" to Icons.Outlined.Archive, "Delete" to Icons.Outlined.Delete)
+                // Official parity: no "Bot Screen" row (verified against official chat ⋮ menu).
                 items.forEachIndexed { index, (label, icon) ->
-                    if (index == 6) HorizontalDivider(color = Color.White.copy(alpha = .10f), modifier = Modifier.padding(horizontal = 16.dp))
+                    if (index == 5) HorizontalDivider(color = Color.White.copy(alpha = .10f), modifier = Modifier.padding(horizontal = 16.dp))
                     DropdownMenuItem(text = { Text(label, fontSize = 17.sp, fontFamily = ChatManrope, color = if (label == "Delete") Color(0xFFFF6B6B) else Color(0xFFF2F4FA)) },
                         leadingIcon = { Icon(icon, null, tint = if (label == "Delete") Color(0xFFFF6B6B) else Color(0xFFF2F4FA), modifier = Modifier.size(20.dp)) },
                         onClick = { expanded = false; if (label == "Execution") onExecution() else onMenuAction(label) }, contentPadding = PaddingValues(horizontal = 16.dp), modifier = Modifier.height(42.dp))
