@@ -54,54 +54,96 @@ import kotlinx.serialization.json.*
 @Composable
 fun HubPluginsScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
+    // Official data source (tcpdump-verified): GET /api/dashboard/plugins/hub.
     var plugins by remember { mutableStateOf<List<JsonObject>?>(null) }
-    var msg by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(Unit) {
-        val r = DashboardApiClient.apiGet("/api/dashboard/plugins")
-        if (r is NetworkResult.Success) plugins = r.data.itemsArray.map { it as JsonObject }
-    }
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Plugins · ${plugins?.size ?: "…"}") },
-                navigationIcon = { IconButton(onBack.let { { it() } }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
-            )
-        },
-    ) { pad ->
-        LazyColumn(Modifier.padding(pad).fillMaxSize()) {
-            items(plugins ?: emptyList(), key = { it.str("name") ?: "?" }) { p ->
-                val name = p.str("name") ?: return@items
-                HubCard {
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(p.str("label") ?: name, style = MaterialTheme.typography.bodyLarge)
-                            Text(
-                                p.str("description") ?: "",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 2, overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                        Column(Modifier.widthIn(max = 150.dp), horizontalAlignment = Alignment.End) {
-                            TextButton(onClick = {
-                                scope.launch {
-                                    msg = apiCall("/api/dashboard/plugins/$name/visibility", "POST",
-                                        buildJsonObject { put("visible", true) }.toString())
-                                        ?.let { null } ?: "Updated"
-                                }
-                            }) { Text("Visible") }
-                        }
-                    }
-                }
+    fun load() {
+        scope.launch {
+            val r = DashboardApiClient.apiGet("/api/dashboard/plugins/hub")
+            if (r is NetworkResult.Success) {
+                val obj = r.data as? JsonObject
+                val raw = (obj?.get("plugins") as? JsonArray ?: JsonArray(emptyList()))
+                    .map { it as JsonObject }
+                // Payload repeats a few names across categories (deepinfra, fal, openrouter,
+                // xai); the official list dedupes by name — 57 rows render as 53.
+                plugins = raw.distinctBy { it.str("name") }
             }
         }
     }
-    msg?.let { }
+    LaunchedEffect(Unit) { load() }
+
+    fun setEnabled(name: String, want: Boolean) {
+        scope.launch {
+            apiCall("/api/dashboard/agent-plugins/$name/${if (want) "enable" else "disable"}",
+                "POST", null)
+            load()
+        }
+    }
+
+    HubScaffold("Plugins", onBack = onBack) { pad ->
+        LazyColumn(pad.fillMaxSize()) {
+            item {
+                // Official header card: "Installed  N  N enabled ⇅"
+                val all = plugins ?: emptyList()
+                val on = all.count {
+                    it.str("runtime_status") !in setOf(
+                        "explicitly disabled", "not in plugins.enabled", "inactive")
+                }
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = HubCardShape,
+                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Installed", style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.weight(1f))
+                        Text("${all.size}", style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.width(16.dp))
+                        Text("$on enabled", style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+            items(plugins ?: emptyList(), key = { it.str("name") ?: "?" }) { pl ->
+                val name = pl.str("name") ?: return@items
+                val enabled = pl.str("runtime_status") !in setOf(
+                    "explicitly disabled", "not in plugins.enabled", "inactive")
+                Column(
+                    Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(pl.str("label") ?: name,
+                                style = MaterialTheme.typography.titleSmall)
+                            val d = pl.str("description") ?: ""
+                            if (d.isNotBlank()) {
+                                Spacer(Modifier.height(2.dp))
+                                Text(d, style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 3, overflow = TextOverflow.Ellipsis)
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            val ver = pl.str("version") ?: ""
+                            val src = pl.str("source") ?: ""
+                            Text(listOf(ver, src).filter { it.isNotBlank() }.joinToString(" · "),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Switch(checked = enabled, onCheckedChange = { setEnabled(name, it) })
+                    }
+                }
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
+                    modifier = Modifier.padding(horizontal = 20.dp),
+                )
+            }
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────
