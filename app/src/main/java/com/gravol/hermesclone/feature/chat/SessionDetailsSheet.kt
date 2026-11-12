@@ -156,7 +156,7 @@ fun SessionDetailsSheet(
         Column(
             Modifier.fillMaxWidth().fillMaxHeight(0.94f).systemBarsPadding()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp)
+                .padding(horizontal = 15.dp)
                 .padding(bottom = 32.dp),
         ) {
             Spacer(Modifier.height(10.dp))
@@ -171,7 +171,7 @@ fun SessionDetailsSheet(
                         tint = SdInk, modifier = Modifier.size(22.dp))
                 }
                 Text("Session Details", color = SdInk, fontFamily = ChatManrope,
-                    fontWeight = FontWeight.SemiBold, fontSize = 20.sp,
+                    fontWeight = FontWeight.SemiBold, fontSize = 17.sp,
                     modifier = Modifier.align(Alignment.Center).padding(bottom = 4.dp))
             }
             Spacer(Modifier.height(14.dp))
@@ -198,10 +198,10 @@ fun SessionDetailsSheet(
             val max = cb?.longOr("context_max")
             val percent = cb?.longOr("context_percent")?.toInt()
             Column(SdCard) {
-                Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 18.dp),
+                Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 18.dp),
                     verticalAlignment = Alignment.Bottom) {
                     Text(used?.let { formatTokensShort(it) } ?: "—", color = SdInk,
-                        fontFamily = ChatManrope, fontWeight = FontWeight.Bold, fontSize = 30.sp)
+                        fontFamily = ChatManrope, fontWeight = FontWeight.Bold, fontSize = 36.sp)
                     Spacer(Modifier.width(8.dp))
                     Text("of ${max?.let { formatTokensShort(it) } ?: "?"}", color = SdSecondary,
                         fontFamily = ChatManrope, fontSize = 15.sp,
@@ -219,7 +219,7 @@ fun SessionDetailsSheet(
                     Text(if (cb != null) "No category detail yet — context figures are estimated."
                          else "Loading…",
                         color = SdSecondary, fontFamily = ChatManrope, fontSize = 14.sp,
-                        modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 16.dp))
+                        modifier = Modifier.padding(start = 18.dp, end = 18.dp, bottom = 16.dp))
                 }
                 cats.forEachIndexed { i, c ->
                     if (i > 0) SdCardDivider()
@@ -266,28 +266,28 @@ private data class SdCategory(val id: String, val label: String, val tokens: Lon
 /** Official card style: same fill as the sheet, hairline border, 20dp radius. */
 private val SdCard: Modifier
     @Composable get() = Modifier.fillMaxWidth()
-        .clip(RoundedCornerShape(20.dp))
+        .clip(RoundedCornerShape(24.dp))
         .background(SdSheetBg)
-        .border(BorderStroke(1.dp, SdCardBorder), RoundedCornerShape(20.dp))
+        .border(BorderStroke(1.dp, SdCardBorder), RoundedCornerShape(24.dp))
 
 @Composable
 private fun SdSectionLabel(text: String) {
     Text(text, color = SdSecondary, fontFamily = ChatManrope, fontSize = 14.sp,
-        modifier = Modifier.padding(start = 4.dp, bottom = 8.dp))
+        modifier = Modifier.padding(start = 4.dp, bottom = 24.dp))
 }
 
 @Composable
 private fun SdCardDivider() {
     HorizontalDivider(color = Color.White.copy(alpha = 0.06f),
-        modifier = Modifier.padding(horizontal = 20.dp))
+        modifier = Modifier.padding(horizontal = 18.dp))
 }
 
 @Composable
 private fun SdDotRow(label: String, value: String, dot: Color) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
+    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 17.dp),
         verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(10.dp).clip(CircleShape).background(dot))
-        Spacer(Modifier.width(14.dp))
+        Box(Modifier.size(16.dp).clip(CircleShape).background(dot))
+        Spacer(Modifier.width(10.dp))
         Text(label, color = SdInk, fontFamily = ChatManrope, fontSize = 16.sp,
             fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f),
             maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -298,7 +298,7 @@ private fun SdDotRow(label: String, value: String, dot: Color) {
 @Composable
 private fun SdIconRow(icon: androidx.compose.ui.graphics.vector.ImageVector,
                       label: String, value: String) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
+    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 17.dp),
         verticalAlignment = Alignment.CenterVertically) {
         Icon(icon, null, tint = SdInk, modifier = Modifier.size(20.dp))
         Spacer(Modifier.width(14.dp))
@@ -320,7 +320,7 @@ private fun SdIconRow(icon: androidx.compose.ui.graphics.vector.ImageVector,
 private fun SdSegmentBar(cats: List<SdCategory>, max: Long?) {
     val capacity = (max ?: 0L).coerceAtLeast(1L)
     val usedTokens = cats.sumOf { it.tokens }
-    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp).height(8.dp)
+    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).height(11.dp)
         .clip(RoundedCornerShape(4.dp)).background(SdTrack),
         horizontalArrangement = Arrangement.spacedBy(3.dp)) {
         cats.forEach { c ->
