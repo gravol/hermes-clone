@@ -2614,6 +2614,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                 // refresh the chip so a config.set switch (or desktop/Telegram
                 // switch) reflects here without a full resume.
                 val infoModel = n.info?.get("model")?.jsonPrimitive?.contentOrNull
+                val infoProvider = n.info?.get("provider")?.jsonPrimitive?.contentOrNull
                 val infoReasoning = n.info?.get("reasoning_effort")?.jsonPrimitive?.contentOrNull
                 // session.info carries the authoritative yolo flag — the button
                 // reads this instead of a separate REST call, and updates live
@@ -2623,6 +2624,8 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                     contextUsed = context.first ?: uiState.contextUsed,
                     contextMax = context.second ?: uiState.contextMax,
                     currentModel = infoModel ?: uiState.currentModel,
+                    currentProvider = infoProvider?.takeIf { it.isNotBlank() }
+                        ?: uiState.currentProvider,
                     currentReasoning = infoReasoning?.takeIf { it.isNotBlank() }
                         ?: uiState.currentReasoning,
                     yoloEnabled = infoYolo?.toBooleanStrictOrNull() ?: uiState.yoloEnabled,

@@ -687,6 +687,7 @@ fun ChatScreen(
     // ── Model picker (v0.1.88) ──
     var showModelPicker by remember { mutableStateOf(false) }
     var showChatSettings by remember { mutableStateOf(false) }
+    var showSessionDetails by remember { mutableStateOf(false) }
     // v0.5.9: Children sheet — live delegated children of this session.
     var showChildren by remember { mutableStateOf(false) }
     var replyTarget by remember { mutableStateOf<UiMessage?>(null) }
@@ -2185,7 +2186,17 @@ fun ChatScreen(
                     model = state.currentModel,
                     onRename = { newTitle -> viewModel.renameSession(newTitle) },
                     onOpenModel = { showChatSettings = false; showModelPicker = true },
+                    onOpenDetails = { showChatSettings = false; showSessionDetails = true },
                     onDismiss = { showChatSettings = false },
+                )
+            }
+
+            if (showSessionDetails) {
+                SessionDetailsSheet(
+                    sessionDbKey = sessionId,
+                    model = state.currentModel,
+                    provider = state.currentProvider,
+                    onDismiss = { showSessionDetails = false },
                 )
             }
 
@@ -4677,6 +4688,7 @@ private fun ChatSettingsSheet(
     model: String?,
     onRename: suspend (String) -> Boolean,
     onOpenModel: () -> Unit,
+    onOpenDetails: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val ctx = LocalContext.current
@@ -4689,7 +4701,6 @@ private fun ChatSettingsSheet(
     val deviceActions by repo.deviceActions.collectAsState(initial = true)
     var editing by remember { mutableStateOf(false) }
     var draft by remember { mutableStateOf(title) }
-    var detailsOpen by remember { mutableStateOf(false) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -4733,13 +4744,8 @@ private fun ChatSettingsSheet(
 
             Spacer(Modifier.height(18.dp))
             Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Color(0xFF181846))) {
-                SheetRow(Icons.Filled.BarChart, "Session details", null, onClick = { detailsOpen = !detailsOpen })
-                if (detailsOpen) {
-                    Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
-                        DetailLine("Model", model?.let { shortModelName(it) } ?: "—")
-                        DetailLine("Working dir", cwd ?: "—")
-                    }
-                }
+                // Official behavior: this row OPENS the Session Details sheet (not an inline expand).
+                SheetRow(Icons.Filled.BarChart, "Session details", null, onClick = onOpenDetails)
             }
             Spacer(Modifier.height(16.dp))
             TextButton(onClick = onOpenModel, modifier = Modifier.fillMaxWidth()) {

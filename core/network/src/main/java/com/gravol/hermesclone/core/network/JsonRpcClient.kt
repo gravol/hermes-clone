@@ -1135,6 +1135,25 @@ class JsonRpcClient(
     suspend fun displayLeaseRelease(viewerId: String): JsonObject =
         request("display.lease.release", mapOf("viewer_id" to viewerId))
 
+    /**
+     * `session.context_breakdown` — Cursor-style split of the context window by
+     * category (labels + display order come from the server; colors are the
+     * client's palette, keyed by category id, exactly like the official app —
+     * the wire's `color` field is a desktop CSS var and carries no hex).
+     * Returns raw JSON: {categories:[{id,label,tokens}], context_used, context_max,
+     * context_percent, context_estimated, context_source, model, context_files}.
+     * Works with the stored DB key (gateway canonicalizes it).
+     */
+    suspend fun sessionContextBreakdown(sessionId: String): JsonObject =
+        request("session.context_breakdown", mapOf("session_id" to sessionId), timeoutMs = 30_000)
+
+    /**
+     * `session.usage` — token/cost counters for the session:
+     * {model, calls, input, output, total, reasoning, prompt, completion, ...}.
+     */
+    suspend fun sessionUsage(sessionId: String): JsonObject =
+        request("session.usage", mapOf("session_id" to sessionId), timeoutMs = 15_000)
+
     suspend fun sessionResume(sessionId: String, omitMessages: Boolean = false): SessionResumeResult {
         DebugLog.log("STATE", "SessionID",
             "sessionResume called with sessionId=$sessionId omitMessages=$omitMessages")

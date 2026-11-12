@@ -110,6 +110,9 @@ data class ChatUiState(
     // v0.1.88: current model + reasoning effort (from resume info / config).
     val currentModel: String? = null,
     val currentReasoning: String? = null,
+    // Effective provider slug for this session (from session.info). Empty until the
+    // server reports one; shown by the Session Details Model card.
+    val currentProvider: String? = null,
     // Session working dir (from session.resume info.cwd) — shown by the
     // official Chat Settings sheet's Folder row.
     val currentCwd: String? = null,
