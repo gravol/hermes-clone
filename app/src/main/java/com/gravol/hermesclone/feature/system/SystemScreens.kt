@@ -10,7 +10,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Edit
@@ -65,7 +69,7 @@ fun CronScreen(onBack: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(if (editorOpen) (if (showCreate) "New Cron Job" else "Edit Cron Job") else "Cron Jobs") },
+                title = { Text(if (editorOpen) (if (showCreate) "New Routine" else "Edit Routine") else "Routines") },
                 navigationIcon = {
                     IconButton(onClick = {
                         if (editorOpen) { editorJob = null; showCreate = false }
@@ -76,12 +80,9 @@ fun CronScreen(onBack: () -> Unit) {
                 },
                 actions = {
                     if (!editorOpen) {
-                        IconButton(onClick = { load() }) {
-                            Icon(Icons.Default.Refresh, contentDescription = "Refresh")
-                        }
-                        // v0.1.80: create new job
+                        // v0.2.26l official parity: plus only, no Refresh
                         IconButton(onClick = { showCreate = true }) {
-                            Icon(Icons.Default.Add, contentDescription = "New job")
+                            Icon(Icons.Default.Add, contentDescription = "Add Routine")
                         }
                     }
                 },
@@ -167,6 +168,31 @@ fun CronScreen(onBack: () -> Unit) {
     }
 }
 
+// Official humanizes the cron expr client-side (device-verified): "Every 15 minutes",
+// "Daily at 07:00", "Weekly on Mon at 13:00", "Monthly on the 1st at 15:00"; anything
+// fancier stays raw ("0 7,16 * * *").
+private fun humanizeCron(expr: String?): String? {
+    val parts = expr?.trim()?.split(Regex("\\s+")) ?: return null
+    if (parts.size != 5) return null
+    val (m, h, dom, mon, dow) = parts
+    val ord = mapOf("1" to "1st", "2" to "2nd", "3" to "3rd", "4" to "4th")
+    val days = mapOf("0" to "Sun", "7" to "Sun", "1" to "Mon", "2" to "Tue", "3" to "Wed",
+        "4" to "Thu", "5" to "Fri", "6" to "Sat")
+    val at = if (h.matches(Regex("\\d+"))) "%02d:%02d".format(h.toInt(), m.toInt().coerceAtMost(59)) else null
+    return when {
+        m == "*/N" -> null
+        m.startsWith("*/") && h == "*" && dom == "*" && mon == "*" && dow == "*" ->
+            "Every ${m.removePrefix("*/")} minutes"
+        m == "0" && h == "*" && dom == "*" && mon == "*" && dow == "*" -> "Hourly"
+        m == "0" && at != null && dom == "*" && mon == "*" && dow == "*" -> "Daily at $at"
+        m == "0" && at != null && dom == "*" && mon == "*" && dow in days ->
+            "Weekly on ${days[dow]} at $at"
+        m == "0" && at != null && dom in ord && mon == "*" && dow == "*" ->
+            "Monthly on the ${ord[dom]} at $at"
+        else -> null
+    }
+}
+
 @Composable
 private fun CronJobRow(
     job: DashboardApiClient.CronJob,
@@ -174,150 +200,88 @@ private fun CronJobRow(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    val paused = job.state == "paused" || job.pausedAt != null
-    var showDeleteConfirm by remember { mutableStateOf(false) }
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-        ),
+    // Official Routines row (device-verified 2026-11-12): status icon + name (red when the
+    // last run failed, "Script exited with code 1…" shown as its line) + description line
+    // (script filename or prompt) + schedule line (schedule_display + " · next in X") + chevron.
+    val failed = job.lastStatus?.lowercase()?.contains("fail") == true ||
+        job.lastStatus?.lowercase()?.contains("error") == true
+    val paused = job.enabled == false || !job.pausedAt.isNullOrBlank()
+    val desc = job.script?.takeIf { it.isNotBlank() }
+        ?: job.prompt?.takeIf { it.isNotBlank() }?.lineSequence()?.first()?.take(160)
+    val sch = job.schedule
+    val schedLine = when {
+        sch != null && sch.kind?.contains("interval") == true && sch.minutes != null ->
+            if (sch.minutes == 1) "Every minute" else "Every " + sch.minutes + " minutes"
+        else -> humanizeCron(sch?.expr) ?: job.scheduleDisplay ?: sch?.expr ?: ""
+    }
+    val sched = buildString {
+        append(schedLine)
+        val next = job.nextRunAt?.let { runCatching { java.time.Instant.parse(it).epochSecond }.getOrNull() }
+        if (next != null && !paused) {
+            val d = next - System.currentTimeMillis() / 1000
+            if (d > 0) {
+                append(" · next in ")
+                append(when {
+                    d < 60 -> "$d seconds"
+                    d < 3600 -> "${d / 60} minutes"
+                    d < 86400 -> "${d / 3600} hours"
+                    d < 604800 -> "${d / 86400} days"
+                    else -> "${d / 604800} weeks"
+                })
+            }
+        }
+    }
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(18.dp),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onEdit),
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            // status icon
+            when {
+                failed -> Icon(Icons.Filled.Error, "Failed",
+                    tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(22.dp))
+                paused -> Icon(Icons.Filled.PauseCircle, "Paused",
+                    tint = androidx.compose.ui.graphics.Color(0xFFE8A33D),
+                    modifier = Modifier.size(22.dp))
+                else -> Icon(Icons.Filled.CheckCircle, "Scheduled",
+                    tint = androidx.compose.ui.graphics.Color(0xFF2FBF71),
+                    modifier = Modifier.size(22.dp))
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
                 Text(
-                    text = job.name,
+                    if (failed && !job.lastError.isNullOrBlank()) job.lastError!! else job.name,
                     style = MaterialTheme.typography.titleSmall,
-                    fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f),
+                    color = if (failed) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                 )
-                AssistChip(
-                    onClick = {},
-                    label = {
-                        Text(
-                            if (paused) "Paused" else "Scheduled",
-                            style = MaterialTheme.typography.labelSmall,
-                        )
-                    },
-                    colors = AssistChipDefaults.assistChipColors(
-                        containerColor = if (paused) {
-                            MaterialTheme.colorScheme.errorContainer
-                        } else {
-                            MaterialTheme.colorScheme.primaryContainer
-                        },
-                    ),
-                )
-            }
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = job.scheduleDisplayLocal() ?: "",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            job.repeat?.let { rep ->
-                if (rep.times != null || (rep.completed ?: 0) > 0) {
-                    Text(
-                        text = "Runs: ${rep.completed ?: 0}${rep.times?.let { " / $it" } ?: ""}",
-                        style = MaterialTheme.typography.labelSmall,
+                if (desc != null) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(desc, style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                        maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                }
+                if (sched.isNotBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(sched, style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            Spacer(Modifier.height(4.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
-                    onClick = { onAction(if (paused) "resume" else "pause") },
-                    modifier = Modifier.height(32.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp),
-                ) {
-                    Icon(
-                        if (paused) Icons.Default.PlayArrow else Icons.Default.Pause,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Text(if (paused) "Resume" else "Pause", style = MaterialTheme.typography.labelMedium)
-                }
-                OutlinedButton(
-                    onClick = { onAction("trigger") },
-                    modifier = Modifier.height(32.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp),
-                ) {
-                    Text("Run now", style = MaterialTheme.typography.labelMedium)
-                }
-                Spacer(Modifier.weight(1f))
-                // v0.1.80: edit + delete
-                IconButton(onClick = onEdit, modifier = Modifier.size(32.dp)) {
-                    Icon(Icons.Default.Edit, contentDescription = "Edit", modifier = Modifier.size(16.dp))
-                }
-                IconButton(onClick = { showDeleteConfirm = true }, modifier = Modifier.size(32.dp)) {
-                    Icon(
-                        Icons.Default.Delete,
-                        contentDescription = "Delete",
-                        modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.error,
-                    )
-                }
-            }
+            Spacer(Modifier.width(8.dp))
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight, null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
-
-    // Destructive action — always confirm (v0.1.80)
-    if (showDeleteConfirm) {
-        AlertDialog(
-            onDismissRequest = { showDeleteConfirm = false },
-            title = { Text("Delete cron job?") },
-            text = { Text("Delete \"${job.name}\"? Its run history stays, but the schedule is removed permanently.") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showDeleteConfirm = false
-                        onDelete()
-                    },
-                ) { Text("Delete", color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") }
-            },
-        )
-    }
 }
 
-// ─────────────────────────────────────────────────────────────
-// Cron editor (v0.1.80): create + edit
-// ─────────────────────────────────────────────────────────────
 
-private val cronLocalDateFormat = java.text.SimpleDateFormat("MMM d, h:mm a", java.util.Locale.getDefault()).apply {
-    timeZone = java.util.TimeZone.getDefault()
-}
-
-/**
- * Schedule text in the PHONE's timezone (v0.1.83). The server's
- * schedule_display renders one-shot "once at ..." timestamps UTC-naive;
- * cron expressions and intervals carry no timezone, so they pass through.
- */
-private fun DashboardApiClient.CronJob.scheduleDisplayLocal(): String? {
-    val s = schedule ?: return scheduleDisplay
-    return when (s.kind) {
-        "once" -> {
-            val runAt = s.runAt?.let { raw ->
-                runCatching {
-                    val ts = java.time.Instant.parse(raw).toEpochMilli()
-                    cronLocalDateFormat.format(java.util.Date(ts))
-                }.getOrNull()
-            }
-            if (runAt != null) "Once: $runAt" else scheduleDisplay
-        }
-        "interval" -> s.minutes?.let { m ->
-            if (m % (24 * 60) == 0) "Every ${m / (24 * 60)} day(s)"
-            else if (m % 60 == 0) "Every ${m / 60} hour(s)"
-            else "Every $m minute(s)"
-        } ?: scheduleDisplay
-        "cron" -> s.expr ?: scheduleDisplay
-        else -> scheduleDisplay
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CronEditScreen(
     job: DashboardApiClient.CronJob?,

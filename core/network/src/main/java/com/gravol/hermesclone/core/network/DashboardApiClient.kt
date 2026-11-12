@@ -173,6 +173,10 @@ object DashboardApiClient {
         @SerialName("paused_at") val pausedAt: String? = null,
         @SerialName("next_run_at") val nextRunAt: String? = null,
         val repeat: CronRepeat? = null,
+        val prompt: String? = null,
+        val script: String? = null,
+        @SerialName("last_status") val lastStatus: String? = null,
+        @SerialName("last_error") val lastError: String? = null,
     )
 
     @Serializable
