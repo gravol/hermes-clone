@@ -67,6 +67,7 @@ fun HubRow(
     label: String,
     value: String? = null,
     sub: String? = null,
+    sub2: String? = null,
     onClick: () -> Unit,
 ) {
     Surface(
@@ -88,6 +89,13 @@ fun HubRow(
                 if (sub != null) {
                     Text(
                         sub, style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (sub2 != null) {
+                    Text(
+                        sub2, style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
@@ -128,6 +136,7 @@ fun HubInnerRow(
     icon: ImageVector,
     label: String,
     value: String? = null,
+    subValue: String? = null,
     onClick: () -> Unit,
 ) {
     Row(
@@ -141,7 +150,17 @@ fun HubInnerRow(
         Spacer(Modifier.width(16.dp))
         Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
         if (value != null) {
-            Text(value, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Column(horizontalAlignment = Alignment.End) {
+                Text(value, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (subValue != null) {
+                    Surface(shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.padding(top = 3.dp)) {
+                        Text(subValue, style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp))
+                    }
+                }
+            }
             Spacer(Modifier.width(4.dp))
         }
         Icon(

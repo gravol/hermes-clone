@@ -172,7 +172,9 @@ fun BotHubScreen(
             Surface(color = MaterialTheme.colorScheme.surface, shape = HubCardShape,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
                 Column {
-                    HubInnerRow(Icons.Filled.Memory, "Model", model,
+                    HubInnerRow(Icons.Filled.Memory, "Model", humanizeModel(model),
+                        subValue = (modelInfo?.str("provider") ?: "")
+                            .removePrefix("custom:").takeIf { it.isNotBlank() },
                         onClick = { onNavigate("hub-model") })
                     HorizontalDivider(color = Color.White.copy(alpha = 0.06f))
                     HubInnerRow(Icons.Filled.School, "Skills", skillCount?.first?.toString(),
@@ -208,7 +210,7 @@ fun BotHubScreen(
                     HubInnerRow(Icons.Filled.Inventory2, "Artifacts",
                         onClick = { onNavigate("hub-artifacts") })
                     HorizontalDivider(color = Color.White.copy(alpha = 0.06f))
-                    HubInnerRow(Icons.Filled.ViewKanban, "Kanban", "Board lanes + tasks",
+                    HubInnerRow(Icons.Filled.ViewKanban, "Kanban", null,
                         onClick = { onNavigate("hub-kanban") })
                 }
             }
