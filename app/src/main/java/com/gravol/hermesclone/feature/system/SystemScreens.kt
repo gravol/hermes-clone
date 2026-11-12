@@ -16,7 +16,9 @@ import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
@@ -466,6 +468,14 @@ private fun CronEditScreen(
 // Skills
 // ─────────────────────────────────────────────────────────────
 
+/** Official category display: split '-' and first-cap each token; MLOps is the one special case. */
+private fun humanizeCategory(c: String): String = when (c.lowercase()) {
+    "mlops" -> "MLOps"
+    else -> c.split('-', '_').joinToString(" ") { t ->
+        t.split(' ').joinToString(" ") { w -> w.replaceFirstChar { ch -> ch.uppercase() } }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SkillsScreen(
@@ -479,8 +489,10 @@ fun SkillsScreen(
     // v0.2.7 official parity: show-mode + category filter + New Skill sheet
     var showMode by remember { mutableStateOf("All") }        // All | Enabled | Disabled
     var category by remember { mutableStateOf<String?>(null) } // null = all categories
+    var sortBy by remember { mutableStateOf("Name") }          // Name | Category | Most used
     var showFilter by remember { mutableStateOf(false) }
     var showNew by remember { mutableStateOf(false) }
+    var showBulk by remember { mutableStateOf(false) }
 
     fun load() {
         scope.launch {
@@ -496,13 +508,7 @@ fun SkillsScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = {
-                    val list = skills
-                    Text(
-                        if (list == null) "Skills"
-                        else "Installed ${list.size} · ${list.count { it.enabled }} on",
-                    )
-                },
+                title = { Text("Skills") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -510,13 +516,10 @@ fun SkillsScreen(
                 },
                 actions = {
                     IconButton(onClick = { showFilter = true }) {
-                        Icon(Icons.Default.FilterList, contentDescription = "Filter & Sort")
-                    }
-                    IconButton(onClick = { load() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                        Icon(Icons.Default.FilterList, contentDescription = "Filter and Sort")
                     }
                     IconButton(onClick = { showNew = true }) {
-                        Icon(Icons.Default.Add, contentDescription = "New Skill")
+                        Icon(Icons.Default.Add, contentDescription = "Add Skill")
                     }
                 },
             )
@@ -541,45 +544,66 @@ fun SkillsScreen(
                     }
                 }
                 else -> {
-                    val filtered = skills!!.filter { sk ->
+                    val all = skills!!
+                    val filtered = all.filter { sk ->
                         (showMode == "All" ||
                             (showMode == "Enabled" && sk.enabled) ||
                             (showMode == "Disabled" && !sk.enabled)) &&
                         (category == null || sk.category.equals(category, ignoreCase = true))
+                    }.let { list ->
+                        when (sortBy) {
+                            "Category" -> list.sortedWith(
+                                compareBy({ it.category ?: "~" }, { it.name.lowercase() }))
+                            "Most used" -> list.sortedByDescending { it.usage ?: 0 }
+                            else -> list.sortedBy { it.name.lowercase() }
+                        }
                     }
-                    LazyColumn(
-                        contentPadding = PaddingValues(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(filtered, key = { it.name }) { skill ->
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { onOpenSkill(skill.name) },
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                                ),
+                    LazyColumn(Modifier.fillMaxSize()) {
+                        // Official header card: "Installed | <n> | <n> on ⇅" (⇅ = Enable/Disable All).
+                        item {
+                            Surface(
+                                color = MaterialTheme.colorScheme.surface,
+                                shape = RoundedCornerShape(18.dp),
+                                modifier = Modifier.fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(12.dp),
+                                    Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Text(
-                                                text = skill.name,
-                                                style = MaterialTheme.typography.titleSmall,
-                                                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
-                                            )
-                                            Spacer(Modifier.width(8.dp))
-                                            skill.category?.let { cat ->
-                                                Text(
-                                                    text = cat,
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = MaterialTheme.colorScheme.primary,
-                                                )
-                                            }
-                                        }
+                                    Text("Installed", style = MaterialTheme.typography.titleSmall,
+                                        modifier = Modifier.weight(1f))
+                                    Text("${all.size}", style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Spacer(Modifier.width(16.dp))
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.clickable { showBulk = true },
+                                    ) {
+                                        Text("${all.count { it.enabled }} on",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.primary)
+                                        Spacer(Modifier.width(4.dp))
+                                        Icon(Icons.Default.SwapVert, null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(16.dp))
+                                    }
+                                }
+                            }
+                        }
+                        items(filtered, key = { it.name }) { skill ->
+                            Column(
+                                Modifier.fillMaxWidth()
+                                    .clickable { onOpenSkill(skill.name) }
+                                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            text = skill.name,
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                                        )
                                         skill.description?.let { d ->
                                             if (d.isNotBlank()) {
                                                 Spacer(Modifier.height(2.dp))
@@ -587,21 +611,13 @@ fun SkillsScreen(
                                                     text = d,
                                                     style = MaterialTheme.typography.bodySmall,
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    maxLines = 2,
+                                                    maxLines = 4,
                                                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                                                 )
                                             }
                                         }
-                                        skill.usage?.let { u ->
-                                            if (u > 0) {
-                                                Text(
-                                                    text = "Used $u×",
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                )
-                                            }
-                                        }
                                     }
+                                    Spacer(Modifier.width(12.dp))
                                     Switch(
                                         checked = skill.enabled,
                                         onCheckedChange = { enabled ->
@@ -618,6 +634,10 @@ fun SkillsScreen(
                                     )
                                 }
                             }
+                            HorizontalDivider(
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
+                                modifier = Modifier.padding(horizontal = 20.dp),
+                            )
                         }
                     }
                 }
@@ -625,41 +645,138 @@ fun SkillsScreen(
         }
     }
 
-    // v0.2.7: official Filter & Sort sheet (Show + Categories)
+    // Official Filter & Sort bottom sheet: Show (+counts), Categories (+counts, humanized),
+    // Sort By (Name | Category | Most used), Reset in the header.
     if (showFilter) {
-        val all = skills ?: emptyList()
-        val cats = all.mapNotNull { it.category?.takeIf { c -> c.isNotBlank() } }.distinct().sorted()
-        AlertDialog(
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
             onDismissRequest = { showFilter = false },
-            title = { Text("Filter & Sort") },
-            text = {
-                Column(Modifier.verticalScroll(rememberScrollState())) {
-                    Text("Show", style = MaterialTheme.typography.labelMedium)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("All", "Enabled", "Disabled").forEach { m ->
-                            FilterChip(m == showMode, { showMode = m }, label = { Text(m) })
-                        }
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    Text("Categories", style = MaterialTheme.typography.labelMedium)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilterChip(category == null, { category = null }, label = { Text("All") })
-                    }
-                    cats.chunked(3).forEach { row ->
-                        Spacer(Modifier.height(6.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            row.forEach { c ->
-                                FilterChip(
-                                    category == c,
-                                    { category = if (category == c) null else c },
-                                    label = { Text(c, maxLines = 1) },
-                                )
-                            }
+            sheetState = sheetState,
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
+            val all = skills ?: emptyList()
+            val cats = all.mapNotNull { it.category?.takeIf { c -> c.isNotBlank() } }
+                .groupingBy { it }.eachCount()
+            Column(
+                Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
+                    .padding(bottom = 32.dp),
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Filter & Sort", style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.weight(1f))
+                    TextButton(onClick = {
+                        showMode = "All"; category = null; sortBy = "Name"
+                    }) { Text("Reset") }
+                }
+                Text("Show", Modifier.padding(start = 20.dp, top = 10.dp, bottom = 4.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                listOf("All" to all.size, "Enabled" to all.count { it.enabled },
+                    "Disabled" to all.count { !it.enabled }).forEach { (mode, n) ->
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clickable { showMode = mode }
+                            .padding(horizontal = 20.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(mode, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+                        Text("$n", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (showMode == mode) {
+                            Spacer(Modifier.width(10.dp))
+                            Icon(Icons.Default.Check, null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp))
                         }
                     }
                 }
+                Text("Categories", Modifier.padding(start = 20.dp, top = 14.dp, bottom = 4.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(
+                    Modifier.fillMaxWidth().clickable { category = null }
+                        .padding(horizontal = 20.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("All categories", Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+                    if (category == null) Icon(Icons.Default.Check, null,
+                        tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                }
+                cats.entries.sortedBy { humanizeCategory(it.key).lowercase() }.forEach { (c, n) ->
+                    val label = humanizeCategory(c)
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clickable { category = if (category == c) null else c }
+                            .padding(horizontal = 20.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+                        Text("$n", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (category == c) {
+                            Spacer(Modifier.width(10.dp))
+                            Icon(Icons.Default.Check, null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
+                Text("Sort By", Modifier.padding(start = 20.dp, top = 14.dp, bottom = 4.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                listOf("Name", "Category", "Most used").forEach { s ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable { sortBy = s }
+                            .padding(horizontal = 20.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(s, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+                        if (sortBy == s) Icon(Icons.Default.Check, null,
+                            tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                    }
+                }
+            }
+        }
+    }
+
+    // Official "N on ⇅" menu: Enable All / Disable All (server has no bulk route — official
+    // loops the same toggle; we do the same).
+    if (showBulk) {
+        val all = skills ?: emptyList()
+        AlertDialog(
+            onDismissRequest = { showBulk = false },
+            containerColor = MaterialTheme.colorScheme.surface,
+            title = null,
+            text = {
+                Column {
+                    TextButton(
+                        onClick = {
+                            showBulk = false
+                            scope.launch {
+                                all.filter { !it.enabled }.forEach {
+                                    DashboardApiClient.toggleSkill(it.name, true)
+                                }
+                                load()
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Enable All", color = MaterialTheme.colorScheme.onSurface) }
+                    TextButton(
+                        onClick = {
+                            showBulk = false
+                            scope.launch {
+                                all.filter { it.enabled }.forEach {
+                                    DashboardApiClient.toggleSkill(it.name, false)
+                                }
+                                load()
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Disable All", color = MaterialTheme.colorScheme.onSurface) }
+                }
             },
-            confirmButton = { TextButton(onClick = { showFilter = false }) { Text("Done") } },
+            confirmButton = {},
         )
     }
 
