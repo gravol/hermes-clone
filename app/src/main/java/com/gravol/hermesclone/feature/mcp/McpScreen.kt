@@ -56,6 +56,7 @@ import com.gravol.hermesclone.di.AppModule
 import kotlinx.coroutines.launch
 import com.gravol.hermesclone.core.network.DashboardApiClient
 import com.gravol.hermesclone.core.network.NetworkResult
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -64,7 +65,10 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
+import androidx.compose.material.icons.outlined.GridOn
 import kotlinx.serialization.json.jsonObject
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.foundation.shape.RoundedCornerShape
 import kotlinx.serialization.json.jsonPrimitive
 
 /**
@@ -81,6 +85,8 @@ data class McpRow(
     val tools: Int,              // -1 = runtime unknown
     val command: String,
     val url: String,
+    val envCount: Int = 0,
+    val fullCmd: String = "",
 )
 
 /**
@@ -100,7 +106,7 @@ fun McpScreen(onBack: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("MCP Servers") },
+                title = { Text("MCP") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -109,13 +115,10 @@ fun McpScreen(onBack: () -> Unit) {
                 actions = {
                     // v0.2.7: official parity — Catalog + Add Server
                     IconButton(onClick = { showCatalog = true; vm.loadCatalog() }) {
-                        Icon(Icons.Outlined.Extension, contentDescription = "Catalog")
+                        Icon(Icons.Outlined.GridOn, contentDescription = "Catalog")
                     }
                     IconButton(onClick = { showAdd = true }) {
                         Icon(Icons.Outlined.Add, contentDescription = "Add Server")
-                    }
-                    IconButton(onClick = { vm.refresh() }) {
-                        Icon(Icons.Outlined.Refresh, contentDescription = "Refresh")
                     }
                 },
             )
@@ -141,91 +144,75 @@ fun McpScreen(onBack: () -> Unit) {
                 }
                 else -> {
                     val rows = state.rows!!
-                    LazyColumn(
-                        contentPadding = PaddingValues(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    // Official design: one card, "Servers | N" header, rows of
+                    // name + transport chip + full command (mono) + env count + Switch.
+                    Surface(
+                        color = MaterialTheme.colorScheme.surface,
+                        shape = RoundedCornerShape(18.dp),
+                        modifier = Modifier.fillMaxWidth().padding(12.dp),
                     ) {
-                        item {
-                            Text(
-                                "Runtime state is the gateway's cache — Test probes live. Toggle, add, install from catalog, or remove.",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(bottom = 4.dp),
-                            )
-                        }
-                        if (rows.isEmpty()) {
-                            item {
-                                Text(
-                                    "No MCP servers configured for this profile.",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(vertical = 16.dp),
-                                )
-                            }
-                        }
-                        items(rows, key = { it.name }) { row ->
-                            Card(
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                                ),
+                        Column {
+                            Row(
+                                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
+                                verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Column(Modifier.padding(12.dp)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Column(Modifier.weight(1f)) {
-                                            Text(
-                                                row.name,
-                                                style = MaterialTheme.typography.titleSmall,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                            )
-                                            Text(
-                                                buildString {
-                                                    append(row.transport)
-                                                    append(" · ")
-                                                    append(if (row.source == "plugin") "plugin:${row.plugin}" else "config")
-                                                    if (!row.enabled) append(" · disabled")
-                                                    if (row.tools >= 0) append(" · ${row.tools} tools")
-                                                },
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            )
-                                            if (row.command.isNotBlank() || row.url.isNotBlank()) {
-                                                Text(
-                                                    row.url.ifBlank { row.command },
+                                Text("Servers", style = MaterialTheme.typography.titleSmall,
+                                    modifier = Modifier.weight(1f))
+                                Text("${rows.size}", style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            HorizontalDivider(
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
+                                modifier = Modifier.padding(horizontal = 20.dp),
+                            )
+                            rows.forEachIndexed { idx, row ->
+                                Row(
+                                    Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(row.name, style = MaterialTheme.typography.titleSmall,
+                                                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            Spacer(Modifier.width(8.dp))
+                                            Surface(
+                                                shape = MaterialTheme.shapes.small,
+                                                border = androidx.compose.foundation.BorderStroke(
+                                                    1.dp,
+                                                    androidx.compose.ui.graphics.Color(0xFFE8A33D).copy(alpha = 0.6f),
+                                                ),
+                                                color = androidx.compose.ui.graphics.Color.Transparent,
+                                            ) {
+                                                Text(row.transport.uppercase(),
                                                     style = MaterialTheme.typography.labelSmall,
-                                                    fontFamily = FontFamily.Monospace,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis,
-                                                )
+                                                    color = androidx.compose.ui.graphics.Color(0xFFE8A33D),
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp))
                                             }
                                         }
-                                        StatusChip(row.status)
-                                        Spacer(Modifier.width(6.dp))
-                                        // v0.2.7: enable toggle + remove (PUT/DELETE /api/mcp/servers/{name}…)
-                                        Switch(
-                                            checked = row.enabled,
-                                            onCheckedChange = { want -> vm.setEnabled(row.name, want) },
-                                        )
-                                        IconButton(onClick = { vm.remove(row.name) }) {
-                                            Icon(Icons.Outlined.Delete, "Remove",
-                                                tint = MaterialTheme.colorScheme.error)
+                                        val cmd = row.url.ifBlank { row.fullCmd.ifBlank { row.command } }
+                                        if (cmd.isNotBlank()) {
+                                            Spacer(Modifier.height(3.dp))
+                                            Text(cmd,
+                                                style = MaterialTheme.typography.labelMedium,
+                                                fontFamily = FontFamily.Monospace,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1, overflow = TextOverflow.Ellipsis)
                                         }
-                                        Spacer(Modifier.width(4.dp))
-                        TextButton(
-                                            enabled = state.testing == null,
-                                            onClick = { vm.test(row.name) },
-                                        ) {
-                                            if (state.testing == row.name) {
-                                                CircularProgressIndicator(
-                                                    modifier = Modifier.width(16.dp).height(16.dp),
-                                                    strokeWidth = 2.dp,
-                                                )
-                                            } else {
-                                                Text("Test")
-                                            }
+                                        if (row.envCount > 0) {
+                                            Text("${row.envCount} env vars",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
                                     }
+                                    Spacer(Modifier.width(12.dp))
+                                    Switch(checked = row.enabled,
+                                        onCheckedChange = { want -> vm.setEnabled(row.name, want) })
+                                }
+                                if (idx < rows.size - 1) {
+                                    HorizontalDivider(
+                                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
+                                        modifier = Modifier.padding(horizontal = 20.dp),
+                                    )
                                 }
                             }
                         }
@@ -418,6 +405,12 @@ class McpViewModel(application: Application) : AndroidViewModel(application) {
                         tools = rt?.get("tools")?.jsonPrimitive?.intOrNull ?: -1,
                         command = o["command"]?.jsonPrimitive?.contentOrNull ?: "",
                         url = o["url"]?.jsonPrimitive?.contentOrNull ?: "",
+                        envCount = (o["env"] as? JsonObject)?.size
+                            ?: (o["env"] as? JsonArray)?.size ?: 0,
+                        fullCmd = ((o["command"]?.jsonPrimitive?.contentOrNull ?: "") +
+                            " " + ((o["args"] as? JsonArray)?.mapNotNull {
+                                it.jsonPrimitive.contentOrNull
+                            }?.joinToString(" ") ?: "")).trim(),
                     )
                 }.sortedBy { it.name }
                 uiState = uiState.copy(rows = rows, error = null)
