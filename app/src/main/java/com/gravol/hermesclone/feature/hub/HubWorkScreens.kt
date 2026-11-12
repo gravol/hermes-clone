@@ -252,7 +252,9 @@ private fun ProjectTreeRow(p: JsonObject, onClick: () -> Unit) {
                 )
             }
             Spacer(Modifier.width(10.dp))
-            Text(count.toString(), color = ProjectMuted, fontSize = 13.sp, lineHeight = 17.sp)
+            // Official shows "N conversation(s)", not a bare count.
+            Text("$count " + if (count == 1) "conversation" else "conversations",
+                color = ProjectMuted, fontSize = 13.sp, lineHeight = 17.sp)
             Icon(
                 Icons.AutoMirrored.Filled.KeyboardArrowRight, null,
                 tint = ProjectMuted, modifier = Modifier.size(16.dp),
