@@ -659,7 +659,7 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
     }
 
     /** Create a new session server-side, then hand the live session id to [onDone]. */
-    fun createSession(onDone: (String?) -> Unit) {
+    fun createSession(profile: String? = null, onDone: (String?) -> Unit) {
         if (_uiState.value.isCreating) return
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isCreating = true, error = null)
@@ -670,7 +670,7 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
                 val modelPick = settingsRepo.modelPick.first().ifBlank { null }
                 val reasoningPick = settingsRepo.reasoningPick.first().ifBlank { null }
                 val (liveSid, durableKey) = rpc.createSessionWithKey(
-                    model = modelPick, reasoningEffort = reasoningPick,
+                    model = modelPick, reasoningEffort = reasoningPick, profile = profile,
                 )
                 // v0.1.901: open the new chat by its DURABLE key. The live sid is a
                 // routing key the gateway reaps ~20 s after this socket goes away, and

@@ -907,9 +907,13 @@ class JsonRpcClient(
     suspend fun createSessionWithKey(
         model: String? = null,
         reasoningEffort: String? = null,
+        profile: String? = null,
     ): Pair<String, String?> {
-        DebugLog.log("RPC", "JsonRpc", "session.create (model=$model effort=$reasoningEffort)")
-        val params = ModelPick.createParams(model, reasoningEffort)
+        DebugLog.log("RPC", "JsonRpc", "session.create (model=$model effort=$reasoningEffort profile=$profile)")
+        val params = ModelPick.createParams(model, reasoningEffort).toMutableMap()
+        // Official parity: tapping an agent row starts a chat bound to THAT agent —
+        // gateway session.create honors "profile" (methods_session._create_session).
+        if (!profile.isNullOrBlank() && profile != "default") params["profile"] = profile
         val result: CreateSessionResult = request(
             "session.create",
             params,

@@ -392,10 +392,13 @@ fun HomeScreen(
                             group = group,
                             expanded = (expand[group.key] ?: 0) > 0,
                             onClick = {
-                                expand[group.key] = when (expand[group.key]) {
-                                    null, 0 -> PEEK
-                                    -1 -> 0
-                                    else -> -1
+                                // Official parity (G3, verified on-device 2026-11-12): tapping
+                                // an agent row (anywhere on it, chevron included) starts a new
+                                // chat bound to THAT agent — it does NOT collapse the group.
+                                if (!state.isCreating) viewModel.createSession(profile = group.name) { sid ->
+                                    if (sid != null) onSessionTap(
+                                        SessionSummary(id = sid, title = "New session", source = group.name),
+                                    )
                                 }
                             },
                         )

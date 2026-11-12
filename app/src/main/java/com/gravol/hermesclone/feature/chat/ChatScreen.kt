@@ -1650,7 +1650,7 @@ fun ChatScreen(
                             textStyle = androidx.compose.ui.text.TextStyle(color = Color(0xFFF2F4FA), fontSize = 17.sp, fontFamily = ChatManrope),
                             cursorBrush = SolidColor(Color(0xFF447CFF)), maxLines = 4,
                             decorationBox = { inner -> Box {
-                                if (composerText.isEmpty()) Text(if (state.isStreaming) "Queue a message..." else "Message Hermes...", color = Color(0xFF676571), fontSize = 17.sp, fontFamily = ChatManrope)
+                                if (composerText.isEmpty()) Text(if (state.isStreaming) "Queue a message..." else "Message ${if (botName == "default") "Hermes" else botName}...", color = Color(0xFF676571), fontSize = 17.sp, fontFamily = ChatManrope)
                                 inner()
                             } })
                     }
