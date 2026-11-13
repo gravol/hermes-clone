@@ -6,9 +6,14 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -563,7 +568,7 @@ fun HubKanbanScreen(onBack: () -> Unit) {
                                             }
                                         }
                                         if (laneTasks.isEmpty()) {
-                                            // Official ny2 case 13: 140dp card, 20dp radius, dashed icon 22dp @0.6 alpha
+                                            // Official ny2 case 13: 140dp card, 20dp radius, tray glyph 22dp @0.6 alpha
                                             item {
                                                 Row(
                                                     Modifier.fillMaxWidth().height(140.dp)
@@ -572,7 +577,8 @@ fun HubKanbanScreen(onBack: () -> Unit) {
                                                         .padding(horizontal = 24.dp),
                                                     verticalAlignment = Alignment.CenterVertically,
                                                 ) {
-                                                    KbDashedCircle(Modifier.size(22.dp),
+                                                    // official draws a 14dp glyph inside a 22dp canvas
+                                                    KbTrayGlyph(Modifier.size(22.dp).padding(4.dp),
                                                         Color(0xFFB8C4E8).copy(alpha = 0.6f))
                                                     Spacer(Modifier.width(10.dp))
                                                     Text("No tasks", color = Color(0xFFB8C4E8),
@@ -942,6 +948,34 @@ private fun KbDashedCircle(modifier: Modifier = Modifier, color: Color) {
             size = Size(size.width - 2 * pad, size.height - 2 * pad),
             style = stroke,
         )
+    }
+}
+
+/** Official "No tasks" card glyph (of_kbD_clean, pixel-measured): rounded-square frame
+ *  whose bottom edge dips into a centered semicircular notch (tray/inbox). Distinct from
+ *  the lane-header dashed circle. Measured on official: 14dp square, ~1.1dp stroke,
+ *  notch ~40% of frame width. Official draws it in a 22dp canvas; we size the Canvas
+ *  to the drawn box and match the drawn 14dp. */
+@Composable
+private fun KbTrayGlyph(modifier: Modifier = Modifier, color: Color) {
+    Canvas(modifier) {
+        val stroke = Stroke(width = 1.6f.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+        val pad = stroke.width / 2
+        val r = Rect(pad, pad, size.width - pad, size.height - pad)
+        drawRoundRect(color = color, topLeft = Offset(r.left, r.top),
+            size = Size(r.width, r.height), cornerRadius = CornerRadius(3.5f.dp.toPx()), style = stroke)
+        // tray line with centered downward dip (~40% of frame width)
+        val lineY = r.bottom - 4.0f.dp.toPx()
+        val dipR = r.width * 0.20f
+        val cx = r.center.x
+        val path = Path().apply {
+            moveTo(r.left + 1.2f.dp.toPx(), lineY)
+            lineTo(cx - dipR, lineY)
+            arcTo(Rect(cx - dipR, lineY - 1.0f.dp.toPx(), cx + dipR, lineY + dipR * 2f - 1.0f.dp.toPx()),
+                startAngleDegrees = 180f, sweepAngleDegrees = 180f, forceMoveTo = false)
+            lineTo(r.right - 1.2f.dp.toPx(), lineY)
+        }
+        drawPath(path, color = color, style = stroke)
     }
 }
 
