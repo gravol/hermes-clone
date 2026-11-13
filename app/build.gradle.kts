@@ -1,3 +1,6 @@
+import java.security.MessageDigest
+import java.util.Base64
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -13,8 +16,8 @@ android {
         applicationId = "com.gravol.hermesclone"
         minSdk = 34
         targetSdk = 34
-        versionCode = 92
-        versionName = "0.2.29-test"
+        versionCode = 93
+        versionName = "0.2.30-test"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -56,10 +59,12 @@ android {
             decodedFile.parentFile.mkdirs()
             // Pure-JVM decode (was: ProcessBuilder base64 -d — failed on CI runners)
             val cleaned = ciBase64.replace("\r", "").replace("\n", "").trim()
-            val decoded = java.util.Base64.getMimeDecoder().decode(cleaned)
+            val decoded = Base64.getMimeDecoder().decode(cleaned.toByteArray(Charsets.US_ASCII))
             require(decoded.size > 100) { "KEYSTORE_BASE64 decoded to only ${decoded.size} bytes" }
             decodedFile.writeBytes(decoded)
-            logger.lifecycle("ci-release.keystore: ${decoded.size} bytes, sha256=${java.security.MessageDigest.getInstance("SHA-256").digest(decoded).joinToString("") { "%02x".format(it) }}")
+            val dig = MessageDigest.getInstance("SHA-256").digest(decoded)
+            val hex = dig.joinToString("") { "%02x".format(it.toInt() and 0xff) }
+            logger.lifecycle("ci-release.keystore: " + decoded.size + " bytes, sha256=" + hex)
             val ciKeyAlias = providers.environmentVariable("KEY_ALIAS").orNull ?: "hermex"
             val ciKeyPass = providers.environmentVariable("KEY_PASSWORD").orNull ?: ""
             signingConfigs.create("release") {
