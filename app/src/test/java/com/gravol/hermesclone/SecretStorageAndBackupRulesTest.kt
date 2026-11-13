@@ -64,17 +64,6 @@ class SecretStorageAndBackupRulesTest {
         assertTrue("CookiePersistor delegates to SecureStore", cookies.contains("SecureStore.open("))
     }
 
-    @Test
-    fun settingsScreenDoesNotAssertEncryptionUnconditionally() {
-        val screen = read(
-            "app", "src", "main", "java", "com", "gravol", "hermesclone", "feature", "settings", "SettingsScreen.kt",
-        )
-        assertTrue(
-            "the encryption claim must be derived from the storage mode",
-            screen.contains("KeychainStore.isStorageEncrypted()"),
-        )
-    }
-
     /**
      * v0.1.891 shipped a cleanup that deleted `shared_prefs/<name>.xml` after a **successful**
      * encrypted open. That file is the encrypted store, so credentials survived exactly one

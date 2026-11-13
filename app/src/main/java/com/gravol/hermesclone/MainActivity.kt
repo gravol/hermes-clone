@@ -52,6 +52,7 @@ import com.gravol.hermesclone.feature.hub.BotHubScreen
 import com.gravol.hermesclone.feature.hub.HubDefaultModelScreen
 import com.gravol.hermesclone.feature.hub.HubProjectDetailScreen
 import com.gravol.hermesclone.feature.hub.HubProjectsScreen
+import com.gravol.hermesclone.feature.hub.ArtifactViewerScreen
 import com.gravol.hermesclone.feature.hub.HubArtifactsScreen
 import com.gravol.hermesclone.feature.hub.HubMemoryScreen
 import com.gravol.hermesclone.feature.hub.HubUsageScreen
@@ -431,7 +432,29 @@ fun HermexNavGraph(chatVmsHolder: ChatVmsHolder) {
                 },
             )
         }
-        composable("hub-artifacts") { HubArtifactsScreen(onBack = { navController.popBackStack() }) }
+        composable("hub-artifacts") {
+            HubArtifactsScreen(
+                onBack = { navController.popBackStack() },
+                onOpenChat = { sid, title, profile ->
+                    val enc = URLEncoder.encode(title, "UTF-8")
+                    navController.navigate("chat/$sid/$enc/${URLEncoder.encode(profile, "UTF-8")}") { launchSingleTop = true }
+                },
+                onOpenFile = { a -> navController.navigate("artifact-viewer/${a.id}") },
+            )
+        }
+        composable(
+            route = "artifact-viewer/{artifactId}",
+            arguments = listOf(navArgument("artifactId") { type = NavType.StringType }),
+        ) { entry ->
+            ArtifactViewerScreen(
+                artifactId = entry.arguments?.getString("artifactId") ?: "",
+                onBack = { navController.popBackStack() },
+                onOpenChat = { sid, title, profile ->
+                    val enc = URLEncoder.encode(title, "UTF-8")
+                    navController.navigate("chat/$sid/$enc/${URLEncoder.encode(profile, "UTF-8")}") { launchSingleTop = true }
+                },
+            )
+        }
         composable("hub-memory") { HubMemoryScreen(onBack = { navController.popBackStack() }) }
         composable("hub-usage") { HubUsageScreen(onBack = { navController.popBackStack() }) }
         composable("hub-plugins") { HubPluginsScreen(onBack = { navController.popBackStack() }) }

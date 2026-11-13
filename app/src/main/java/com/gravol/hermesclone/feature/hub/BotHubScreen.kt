@@ -71,6 +71,13 @@ fun BotHubScreen(
     var showSwitcher by remember { mutableStateOf(false) }
     var modelInfo by remember { mutableStateOf<JsonObject?>(null) }
     var skillCount by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    // Official hub shows the ARTIFACTS card count = conversations indexed by the
+    // client-side artifact indexer (drifts as cron sessions accrue — official too).
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val artState by com.gravol.hermesclone.feature.hub.ArtifactIndexer.state.collectAsState()
+    LaunchedEffect(Unit) { com.gravol.hermesclone.feature.hub.ArtifactIndexer.ensureStarted(context) }
+    val artCountLabel = java.text.NumberFormat.getIntegerInstance(java.util.Locale.US)
+        .format(artState.scanned.takeIf { artState.total > 0 } ?: 0)
 
     LaunchedEffect(Unit) {
         try {
@@ -208,6 +215,7 @@ fun BotHubScreen(
                         onClick = { onNavigate("cron") })
                     HorizontalDivider(color = Color.White.copy(alpha = 0.06f))
                     HubInnerRow(Icons.Filled.Inventory2, "Artifacts",
+                        artCountLabel,
                         onClick = { onNavigate("hub-artifacts") })
                     HorizontalDivider(color = Color.White.copy(alpha = 0.06f))
                     HubInnerRow(Icons.Filled.ViewKanban, "Kanban", null,

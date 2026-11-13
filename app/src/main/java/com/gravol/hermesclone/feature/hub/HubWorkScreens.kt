@@ -469,7 +469,7 @@ private fun ProjectSessionRow(s: JsonObject, onOpen: (String, String) -> Unit) {
  * absolute DATE past ~a week ("Jun 17, 2026"), which the official app never shows here — so the
  * thresholds below mirror the official ladder: seconds→now, minute, hour, day, week, month, year.
  */
-private fun relativeTime(epochSeconds: Double): String {
+internal fun relativeTime(epochSeconds: Double): String {
     val now = System.currentTimeMillis()
     var seconds = (now - (epochSeconds * 1000.0).toLong()) / 1000.0
     if (seconds < 0) seconds = 0.0
@@ -488,79 +488,10 @@ private fun relativeTime(epochSeconds: Double): String {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Artifacts — gateway file browser (GET /api/files)
+// ─────────────────────────────────────────────────────────────
+// Artifacts moved to HubArtifactsScreen.kt (v0.2.27 client-side indexer).
 // ─────────────────────────────────────────────────────────────
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun HubArtifactsScreen(onBack: () -> Unit) {
-    val scope = rememberCoroutineScope()
-    var path by remember { mutableStateOf(System.getProperty("user.home") ?: "/") }
-    var entries by remember { mutableStateOf<List<JsonObject>?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var filter by remember { mutableStateOf("") }
-
-    fun load(p: String) {
-        scope.launch {
-            entries = null
-            val r = DashboardApiClient.apiGet("/api/files?path=" + URLEncoder.encode(p, "UTF-8"))
-            if (r is NetworkResult.Success) {
-                path = r.data.str("path") ?: p
-                entries = r.data.arr("entries").map { it as JsonObject }
-                error = null
-            } else error = "Could not list $p"
-        }
-    }
-    LaunchedEffect(Unit) { load(path) }
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Files") },
-                navigationIcon = {
-                    IconButton(onClick = {
-                        if (error == null && path.count { it == '/' } > 1) load(path.substringBeforeLast('/').ifBlank { "/" })
-                        else onBack()
-                    }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
-                },
-            )
-        },
-    ) { pad ->
-        Column(Modifier.padding(pad).fillMaxSize()) {
-            OutlinedTextField(
-                filter, { filter = it },
-                Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-                placeholder = { Text(path) }, singleLine = true,
-                leadingIcon = { Icon(Icons.Filled.Search, null) },
-            )
-            error?.let { Text(it, Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error) }
-            val shown = (entries ?: emptyList()).filter {
-                filter.isBlank() || (it.str("name") ?: "").contains(filter, true)
-            }
-            LazyColumn(Modifier.fillMaxSize()) {
-                items(shown, key = { it.str("path") ?: "?" }) { e ->
-                    val dir = e.bool("is_directory") == true
-                    val size = e.num("size")?.toLong()
-                    HubRow(
-                        if (dir) Icons.Filled.Folder else Icons.Filled.InsertDriveFile,
-                        e.str("name") ?: "?",
-                        if (!dir && size != null) humanSize(size) else null,
-                        onClick = { if (dir) load(e.str("path") ?: return@HubRow) },
-                    )
-                }
-            }
-        }
-    }
-}
-
-private fun humanSize(n: Long): String = when {
-    n >= 1_000_000_000 -> "%.1f GB".format(n / 1e9)
-    n >= 1_000_000 -> "%.1f MB".format(n / 1e6)
-    n >= 1_000 -> "%.0f KB".format(n / 1e3)
-    else -> "$n B"
-}
-
-// ─────────────────────────────────────────────────────────────
 // Memory & Learning: learning graph list + curator + memory providers
 // ─────────────────────────────────────────────────────────────
 
