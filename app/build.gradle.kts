@@ -13,8 +13,8 @@ android {
         applicationId = "com.gravol.hermesclone"
         minSdk = 34
         targetSdk = 34
-        versionCode = 91
-        versionName = "0.2.28-test"
+        versionCode = 92
+        versionName = "0.2.29-test"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
