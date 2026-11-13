@@ -1,3 +1,9 @@
+## v0.2.30-test (vc93) — 2026-11-13 — tray glyph + CI decode fix
+- "No tasks" card glyph corrected to the official tray/inbox: rounded-square frame with a
+  centered semicircular notch in the bottom edge (was: dashed circle, which is only correct
+  for lane headers). Pixel-matched: 37x37 px @2.625 density on-device vs official.
+- CI signing decode rewritten in pure JVM (ProcessBuilder base64 produced a corrupt keystore
+  on runners; `java.*` is shadowed by the java{} extension in Kotlin DSL — top-level imports).
 ## v0.2.29-test (vc92) — 2026-11-13 — CI signing restored
 - Release lane fixed: GitHub Actions signing secrets were gone (repo showed 0 secrets);
   re-added KEYSTORE_BASE64/KEYSTORE_PASSWORD/KEY_ALIAS/KEY_PASSWORD from the release keystore.
