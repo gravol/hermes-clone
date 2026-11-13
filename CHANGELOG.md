@@ -1,3 +1,23 @@
+## v0.2.29-test (vc92) — 2026-11-13 — CI signing restored
+- Release lane fixed: GitHub Actions signing secrets were gone (repo showed 0 secrets);
+  re-added KEYSTORE_BASE64/KEYSTORE_PASSWORD/KEY_ALIAS/KEY_PASSWORD from the release keystore.
+  v0.2.23-test through v0.2.28-test never published because packageRelease died on a
+  corrupted ci-release.keystore ("Tag number over 30 is not supported").
+- Carries everything from the unpublished v0.2.27 (Artifacts parity) + v0.2.28 (Kanban parity).
+- NOTE: phones currently run DEBUG-signed builds; this is the first RELEASE-signed build of the
+  0.2.x line — one-time uninstall/reinstall needed to switch signing identity.
+
+## v0.2.28-test (vc91) — 2026-11-13 — Kanban board official parity
+- Hub Kanban rebuilt to official geometry: top bar, search field, lane chips, lane card,
+  dashed-circle header glyph, "No tasks" card, "A Clear Board" empty state.
+- Select Tasks mode: card multi-select, Move/Archive/Delete bulk actions, official bottom bar.
+- Board actions menu order + Archive Board dialog copy/colors to official.
+- Filters popup + Boards sheet 1:1; Show Archived param verified. Boards CRUD verified E2E.
+
+## v0.2.27-test (vc90) — 2026-11-13 — Artifacts screen parity
+- Client-side artifact indexer (1:1 port of official extraction semantics), search verified
+  against official on matched data; Images carousel + Documents rows; viewer renders files
+  the official 404s on.
 ## v0.6.0 (vc59) — official-app chat rendering
 ## v0.8.3 (vc64)
 - Official-app layout: composer is now round "+" outside the pill on the left,
