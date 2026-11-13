@@ -54,19 +54,12 @@ android {
         if (ciBase64 != null && storePass != null) {
             val decodedFile = layout.buildDirectory.file("ci-release.keystore").get().asFile
             decodedFile.parentFile.mkdirs()
-            decodedFile.writeBytes(
-                ciBase64.encodeToByteArray().let { raw ->
-                    ProcessBuilder("base64", "-d")
-                        .redirectInput(ProcessBuilder.Redirect.PIPE)
-                        .redirectOutput(decodedFile)
-                        .start().also { proc ->
-                            proc.outputStream.write(raw)
-                            proc.outputStream.close()
-                            proc.waitFor()
-                        }
-                    decodedFile.readBytes()
-                }
-            )
+            // Pure-JVM decode (was: ProcessBuilder base64 -d — failed on CI runners)
+            val cleaned = ciBase64.replace("\r", "").replace("\n", "").trim()
+            val decoded = java.util.Base64.getMimeDecoder().decode(cleaned)
+            require(decoded.size > 100) { "KEYSTORE_BASE64 decoded to only ${decoded.size} bytes" }
+            decodedFile.writeBytes(decoded)
+            logger.lifecycle("ci-release.keystore: ${decoded.size} bytes, sha256=${java.security.MessageDigest.getInstance("SHA-256").digest(decoded).joinToString("") { "%02x".format(it) }}")
             val ciKeyAlias = providers.environmentVariable("KEY_ALIAS").orNull ?: "hermex"
             val ciKeyPass = providers.environmentVariable("KEY_PASSWORD").orNull ?: ""
             signingConfigs.create("release") {
