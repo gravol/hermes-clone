@@ -65,6 +65,17 @@ jobs:
         if: steps.check_tag.outputs.exists == 'false'
         run: chmod +x gradlew
 
+      - name: Secret probe (lengths only)
+        if: steps.check_tag.outputs.exists == 'false'
+        env:
+          KS: ${{ secrets.KEYSTORE_BASE64 }}
+          KP: ${{ secrets.KEYSTORE_PASSWORD }}
+          KA: ${{ secrets.KEY_ALIAS }}
+          KR: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          echo "KS_LEN=${#KS} KP_LEN=${#KP} KA_LEN=${#KA} KR_LEN=${#KR}"
+          echo "KS_HEAD=${KS:0:8}"
+
       - name: Build signed release APK
         if: steps.check_tag.outputs.exists == 'false'
         run: ./gradlew assembleRelease --no-configuration-cache
